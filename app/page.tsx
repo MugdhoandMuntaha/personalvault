@@ -97,6 +97,8 @@ export default function FormalGreenWhiteVault() {
   const [previewTextContent, setPreviewTextContent] = useState<string | null>(null);
   const [isLoadingText, setIsLoadingText] = useState(false);
   const [isPreviewMaximized, setIsPreviewMaximized] = useState(false);
+  const [pdfViewerEngine, setPdfViewerEngine] = useState<"google" | "native">("google");
+  const [officeViewerEngine, setOfficeViewerEngine] = useState<"office" | "google">("office");
 
   // Form states
   const [title, setTitle] = useState("");
@@ -1472,6 +1474,18 @@ export default function FormalGreenWhiteVault() {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                {previewUrl && (
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition"
+                    title="Open in new mobile tab"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Open Tab</span>
+                  </a>
+                )}
                 <button
                   onClick={() => setIsPreviewMaximized(!isPreviewMaximized)}
                   className="p-1.5 text-emerald-700 hover:text-emerald-950 rounded-lg hover:bg-emerald-50 transition"
@@ -1493,10 +1507,35 @@ export default function FormalGreenWhiteVault() {
                 previewUrl ? (
                   previewItem.file_name?.match(/\.(doc|docx|ppt|pptx|xls|xlsx)$/i) ? (
                     <div className="w-full h-full flex flex-col items-center">
+                      <div className="w-full flex items-center justify-between mb-2 px-1 text-[11px] text-emerald-800 font-semibold">
+                        <span>Office Viewer Engine</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setOfficeViewerEngine("office")}
+                            className={`px-2 py-0.5 rounded transition ${
+                              officeViewerEngine === "office" ? "bg-emerald-800 text-white font-bold" : "hover:bg-emerald-100"
+                            }`}
+                          >
+                            MS Office
+                          </button>
+                          <button
+                            onClick={() => setOfficeViewerEngine("google")}
+                            className={`px-2 py-0.5 rounded transition ${
+                              officeViewerEngine === "google" ? "bg-emerald-800 text-white font-bold" : "hover:bg-emerald-100"
+                            }`}
+                          >
+                            Google Viewer
+                          </button>
+                        </div>
+                      </div>
                       <iframe
-                        src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl)}`}
+                        src={
+                          officeViewerEngine === "office"
+                            ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl)}`
+                            : `https://docs.google.com/gview?url=${encodeURIComponent(previewUrl)}&embedded=true`
+                        }
                         className={`w-full rounded border border-emerald-200 bg-white ${
-                          isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
+                          isPreviewMaximized ? "h-[calc(100vh-210px)]" : "h-[340px] sm:h-[500px]"
                         }`}
                         title="Office Document Preview"
                       ></iframe>
@@ -1511,10 +1550,35 @@ export default function FormalGreenWhiteVault() {
                     />
                   ) : previewItem.file_name?.match(/\.pdf$/i) ? (
                     <div className="w-full h-full flex flex-col items-center">
+                      <div className="w-full flex items-center justify-between mb-2 px-1 text-[11px] text-emerald-800 font-semibold">
+                        <span>PDF Viewer Engine</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setPdfViewerEngine("google")}
+                            className={`px-2 py-0.5 rounded transition ${
+                              pdfViewerEngine === "google" ? "bg-emerald-800 text-white font-bold" : "hover:bg-emerald-100"
+                            }`}
+                          >
+                            Google PDF (Mobile)
+                          </button>
+                          <button
+                            onClick={() => setPdfViewerEngine("native")}
+                            className={`px-2 py-0.5 rounded transition ${
+                              pdfViewerEngine === "native" ? "bg-emerald-800 text-white font-bold" : "hover:bg-emerald-100"
+                            }`}
+                          >
+                            Native PDF
+                          </button>
+                        </div>
+                      </div>
                       <iframe
-                        src={`${previewUrl}#toolbar=1`}
+                        src={
+                          pdfViewerEngine === "google"
+                            ? `https://docs.google.com/gview?url=${encodeURIComponent(previewUrl)}&embedded=true`
+                            : `${previewUrl}#toolbar=1`
+                        }
                         className={`w-full rounded border border-emerald-200 bg-white ${
-                          isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
+                          isPreviewMaximized ? "h-[calc(100vh-210px)]" : "h-[340px] sm:h-[500px]"
                         }`}
                         title="PDF Preview"
                       ></iframe>
@@ -1522,21 +1586,22 @@ export default function FormalGreenWhiteVault() {
                   ) : previewItem.file_name?.match(/\.(mp4|webm|ogg|mov)$/i) ? (
                     <video
                       controls
+                      playsInline
                       src={previewUrl}
                       className={`w-full rounded ${
-                        isPreviewMaximized ? "max-h-[calc(100vh-180px)]" : "max-h-[500px]"
+                        isPreviewMaximized ? "max-h-[calc(100vh-180px)]" : "max-h-[480px]"
                       }`}
                     />
                   ) : previewItem.file_name?.match(/\.(mp3|wav|aac|m4a)$/i) ? (
-                    <div className="w-full px-6 py-8">
+                    <div className="w-full px-4 sm:px-6 py-6 sm:py-8">
                       <audio controls src={previewUrl} className="w-full" />
                     </div>
                   ) : previewItem.file_name?.match(/\.(txt|json|js|ts|jsx|tsx|py|md|html|css|csv|log)$/i) ? (
                     isLoadingText ? (
                       <RefreshCw className="h-6 w-6 animate-spin text-emerald-700" />
                     ) : (
-                      <pre className={`w-full overflow-auto text-xs font-mono bg-[#06241b] p-4 rounded border border-emerald-800 text-emerald-300 whitespace-pre-wrap ${
-                        isPreviewMaximized ? "h-[calc(100vh-180px)] max-h-none" : "max-h-[500px]"
+                      <pre className={`w-full overflow-auto text-xs font-mono bg-[#06241b] p-3 sm:p-4 rounded border border-emerald-800 text-emerald-300 whitespace-pre-wrap ${
+                        isPreviewMaximized ? "h-[calc(100vh-180px)] max-h-none" : "max-h-[480px]"
                       }`}>
                         {previewTextContent || "No content"}
                       </pre>
