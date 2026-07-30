@@ -314,6 +314,31 @@ export async function addDocumentMetadata(item: {
 }
 
 /**
+ * Generates a presigned URL specifically for in-browser previewing (inline display).
+ * Does NOT force file download.
+ */
+export async function getPresignedViewUrl(storageKey: string, fileName: string) {
+  try {
+    if (!storageKey || !fileName) {
+      return { success: false, error: "Storage key and file name are required." };
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: storageKey,
+      ResponseContentDisposition: "inline",
+    });
+
+    const viewUrl = await getSignedUrl(s3, command, { expiresIn: 600 });
+
+    return { success: true, viewUrl };
+  } catch (error: any) {
+    console.error("Failed to generate presigned view URL:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Generates a temporary presigned download URL for a document in R2.
  */
 export async function getPresignedDownloadUrl(storageKey: string, fileName: string) {
