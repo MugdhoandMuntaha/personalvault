@@ -35,6 +35,7 @@ import {
   ExternalLink,
   Maximize2,
   Minimize2,
+  Menu,
 } from "lucide-react";
 import {
   initDatabase,
@@ -68,6 +69,7 @@ export default function FormalGreenWhiteVault() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<"all" | "document" | "password" | "note">("all");
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Items & folders cache
   const [items, setItems] = useState<VaultItem[]>([]);
@@ -511,48 +513,170 @@ export default function FormalGreenWhiteVault() {
     <div className="min-h-screen bg-[#f4f8f6] text-emerald-950 flex flex-col font-sans">
       {/* Top Formal Navbar */}
       <header className="sticky top-0 z-30 border-b border-emerald-100 bg-white/95 backdrop-blur-md shadow-xs">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200">
-              <FolderOpen className="h-5 w-5" />
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6 py-3 sm:py-3.5">
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            {/* Mobile Sidebar Hamburger Toggle */}
+            <button
+              onClick={() => setMobileSidebarOpen(true)}
+              className="lg:hidden p-1.5 rounded-lg border border-emerald-200 text-emerald-800 hover:bg-emerald-50 transition"
+              title="Open Menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+
+            <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200">
+              <FolderOpen className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight text-emerald-950">
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-emerald-950">
                 PERSONAL VAULT
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="h-2 w-2 rounded-full bg-emerald-600"></span>
-                <span className="text-[10px] uppercase font-extrabold tracking-wider text-emerald-800">
+                <span className="text-[9px] sm:text-[10px] uppercase font-extrabold tracking-wider text-emerald-800">
                   NeonDB & Cloudflare R2 Active
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
               onClick={fetchCurrentContents}
               disabled={isPending}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50 transition"
+              className="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50 transition"
               title="Refresh Folder"
             >
-              <RefreshCw className={`h-4 w-4 ${isPending ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${isPending ? "animate-spin" : ""}`} />
             </button>
             <button
               onClick={handleLock}
-              className="flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition"
+              className="flex items-center gap-1.5 sm:gap-2 rounded-lg bg-rose-50 border border-rose-200 px-2.5 sm:px-3.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition"
             >
               <Lock className="h-3.5 w-3.5" />
-              Lock Vault
+              <span className="hidden sm:inline">Lock Vault</span>
             </button>
           </div>
         </div>
       </header>
 
+      {/* Mobile Sidebar Slide-over Drawer */}
+      {mobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          <div
+            className="fixed inset-0 bg-emerald-950/40 backdrop-blur-xs"
+            onClick={() => setMobileSidebarOpen(false)}
+          ></div>
+          <aside className="relative z-50 w-72 max-w-[85vw] bg-white h-full p-4 space-y-6 overflow-y-auto shadow-2xl border-r border-emerald-100">
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+              <div className="flex items-center gap-2">
+                <FolderOpen className="h-5 w-5 text-emerald-700" />
+                <span className="font-bold text-sm text-emerald-950">Navigation Menu</span>
+              </div>
+              <button
+                onClick={() => setMobileSidebarOpen(false)}
+                className="text-emerald-700 p-1 hover:text-emerald-950"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3">
+                File Categories
+              </p>
+              <button
+                onClick={() => {
+                  setFilterType("all");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                  filterType === "all" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <FolderOpen className="h-4 w-4" />
+                All Contents
+              </button>
+              <button
+                onClick={() => {
+                  setFilterType("document");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                  filterType === "document" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <File className="h-4 w-4 text-emerald-600" />
+                Documents & Files
+              </button>
+              <button
+                onClick={() => {
+                  setFilterType("password");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                  filterType === "password" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <Key className="h-4 w-4 text-emerald-700" />
+                Logins & Passwords
+              </button>
+              <button
+                onClick={() => {
+                  setFilterType("note");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                  filterType === "note" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <FileText className="h-4 w-4 text-emerald-600" />
+                Secure Notes
+              </button>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-emerald-100">
+              <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3">
+                Folder Navigation
+              </p>
+              <div className="space-y-1">
+                <button
+                  onClick={() => {
+                    setCurrentFolderId(null);
+                    setMobileSidebarOpen(false);
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                    currentFolderId === null ? "bg-emerald-100 text-emerald-950 font-bold" : "text-emerald-900 hover:bg-emerald-50"
+                  }`}
+                >
+                  <Home className="h-3.5 w-3.5 text-emerald-700" />
+                  Root Vault
+                </button>
+                {allFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    onClick={() => {
+                      setCurrentFolderId(folder.id);
+                      setMobileSidebarOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2 px-6 py-2 text-xs font-bold rounded-lg truncate transition ${
+                      currentFolderId === folder.id ? "bg-emerald-100 text-emerald-950 font-bold" : "text-emerald-800 hover:bg-emerald-50"
+                    }`}
+                  >
+                    <Folder className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    <span className="truncate">{folder.title}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* Workspace Split Layout */}
-      <div className="flex-1 flex max-w-7xl mx-auto w-full px-6 py-6 gap-6">
-        {/* Left Sidebar Navigation */}
-        <aside className="w-64 shrink-0 space-y-6">
+      <div className="flex-1 flex max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-6 gap-6">
+        {/* Left Sidebar Navigation (Desktop) */}
+        <aside className="hidden lg:block w-64 shrink-0 space-y-6">
           <div className="rounded-xl glass-panel p-4 space-y-2 border border-emerald-100">
             <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-2">
               File Categories
@@ -629,9 +753,9 @@ export default function FormalGreenWhiteVault() {
         {/* Main Explorer Canvas */}
         <main className="flex-1 flex flex-col space-y-4 min-w-0">
           {/* Top Explorer Actions Toolbar */}
-          <div className="rounded-xl glass-panel p-4 flex flex-col sm:flex-row gap-4 items-center justify-between border border-emerald-100">
+          <div className="rounded-xl glass-panel p-3 sm:p-4 flex flex-col sm:flex-row gap-3 sm:gap-4 items-stretch sm:items-center justify-between border border-emerald-100">
             {/* Breadcrumb Path Bar */}
-            <div className="flex items-center gap-1.5 text-xs text-emerald-900 overflow-x-auto w-full sm:w-auto">
+            <div className="flex items-center gap-1.5 text-xs text-emerald-900 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 scrollbar-none">
               <button
                 onClick={() => setCurrentFolderId(null)}
                 className="flex items-center gap-1 hover:text-emerald-700 font-bold transition shrink-0"
@@ -655,13 +779,13 @@ export default function FormalGreenWhiteVault() {
             </div>
 
             {/* Action Buttons & View Toggles */}
-            <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 shrink-0 w-full sm:w-auto justify-start sm:justify-end">
               <button
                 onClick={() => setNewFolderModalOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs font-bold transition"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs font-bold transition"
               >
                 <FolderPlus className="h-3.5 w-3.5 text-emerald-700" />
-                New Folder
+                <span>Folder</span>
               </button>
 
               <button
@@ -669,10 +793,10 @@ export default function FormalGreenWhiteVault() {
                   setRecordTab("document");
                   setAddRecordModalOpen(true);
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold shadow-sm shadow-emerald-700/20 transition"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold shadow-sm shadow-emerald-700/20 transition"
               >
                 <CloudUpload className="h-3.5 w-3.5" />
-                Upload Document
+                <span>Upload</span>
               </button>
 
               <button
@@ -680,13 +804,13 @@ export default function FormalGreenWhiteVault() {
                   setRecordTab("password");
                   setAddRecordModalOpen(true);
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950 text-white hover:bg-emerald-900 text-xs font-bold transition"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950 text-white hover:bg-emerald-900 text-xs font-bold transition"
               >
                 <Plus className="h-3.5 w-3.5" />
-                Add Record
+                <span>Record</span>
               </button>
 
-              <div className="flex items-center bg-emerald-50 border border-emerald-200 rounded-lg p-0.5 ml-2">
+              <div className="flex items-center bg-emerald-50 border border-emerald-200 rounded-lg p-0.5 ml-auto sm:ml-2">
                 <button
                   onClick={() => setViewMode("grid")}
                   className={`p-1.5 rounded-md transition ${
@@ -710,19 +834,19 @@ export default function FormalGreenWhiteVault() {
           </div>
 
           {/* Search bar & info row */}
-          <div className="flex items-center justify-between px-1">
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-0 items-start sm:items-center justify-between px-1">
             <p className="text-xs font-medium text-emerald-800">
               Showing <span className="text-emerald-950 font-bold">{filteredItems.length}</span> items in directory
             </p>
 
-            <div className="relative w-64">
-              <Search className="absolute left-3 top-2 h-3.5 w-3.5 text-emerald-600" />
+            <div className="relative w-full sm:w-64">
+              <Search className="absolute left-3 top-2.5 sm:top-2 h-3.5 w-3.5 text-emerald-600" />
               <input
                 type="text"
                 placeholder="Search items..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-lg border border-emerald-200 bg-white pl-8 pr-3 py-1.5 text-xs text-emerald-950 placeholder-emerald-800/40 outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                className="w-full rounded-lg border border-emerald-200 bg-white pl-8 pr-3 py-2 sm:py-1.5 text-xs text-emerald-950 placeholder-emerald-800/40 outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
               />
             </div>
           </div>
@@ -738,7 +862,7 @@ export default function FormalGreenWhiteVault() {
             </div>
           ) : viewMode === "grid" ? (
             /* Grid View Layout */
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
               {filteredItems.map((item) => (
                 <div
                   key={item.id}
@@ -849,8 +973,8 @@ export default function FormalGreenWhiteVault() {
             </div>
           ) : (
             /* List View Layout */
-            <div className="rounded-xl glass-panel border border-emerald-100 bg-white overflow-hidden shadow-sm">
-              <table className="w-full text-left text-xs text-emerald-950">
+            <div className="rounded-xl glass-panel border border-emerald-100 bg-white overflow-x-auto shadow-sm">
+              <table className="w-full min-w-[480px] text-left text-xs text-emerald-950">
                 <thead className="border-b border-emerald-100 bg-emerald-50 text-emerald-900 font-bold uppercase tracking-wider text-[10px]">
                   <tr>
                     <th className="px-4 py-3">Name</th>
@@ -1118,21 +1242,21 @@ export default function FormalGreenWhiteVault() {
 
       {/* 3. Document Preview Modal */}
       {previewItem && (
-        <div className={`fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/50 backdrop-blur-md ${isPreviewMaximized ? "p-0" : "p-4"}`}>
-          <div className={`w-full flex flex-col space-y-4 glass-panel border border-emerald-200 bg-white shadow-2xl transition-all duration-200 ${
+        <div className={`fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/50 backdrop-blur-md ${isPreviewMaximized ? "p-0" : "p-2 sm:p-4"}`}>
+          <div className={`w-full flex flex-col space-y-3 sm:space-y-4 glass-panel border border-emerald-200 bg-white shadow-2xl transition-all duration-200 ${
             isPreviewMaximized
-              ? "h-screen w-screen max-w-none max-h-none rounded-none p-6 bg-white"
-              : "max-w-4xl max-h-[90vh] rounded-xl p-6"
+              ? "h-screen w-screen max-w-none max-h-none rounded-none p-4 sm:p-6 bg-white"
+              : "max-w-4xl max-h-[95vh] sm:max-h-[90vh] rounded-xl p-4 sm:p-6"
           }`}>
             <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                 {getFileIcon(previewItem)}
-                <div>
-                  <h3 className="text-base font-bold text-emerald-950">{previewItem.title}</h3>
-                  <p className="text-xs text-emerald-800/70 font-semibold uppercase">{previewItem.type}</p>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-emerald-950 truncate">{previewItem.title}</h3>
+                  <p className="text-[10px] sm:text-xs text-emerald-800/70 font-semibold uppercase">{previewItem.type}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <button
                   onClick={() => setIsPreviewMaximized(!isPreviewMaximized)}
                   className="p-1.5 text-emerald-700 hover:text-emerald-950 rounded-lg hover:bg-emerald-50 transition"
@@ -1147,8 +1271,8 @@ export default function FormalGreenWhiteVault() {
             </div>
 
             {/* Preview Body */}
-            <div className={`flex-1 overflow-y-auto bg-emerald-50/50 rounded-lg border border-emerald-100 p-4 flex items-center justify-center ${
-              isPreviewMaximized ? "h-[calc(100vh-140px)] max-h-none" : "min-h-[300px]"
+            <div className={`flex-1 overflow-y-auto bg-emerald-50/50 rounded-lg border border-emerald-100 p-2 sm:p-4 flex items-center justify-center ${
+              isPreviewMaximized ? "h-[calc(100vh-140px)] max-h-none" : "min-h-[260px]"
             }`}>
               {previewItem.type === "document" ? (
                 previewUrl ? (
@@ -1157,7 +1281,7 @@ export default function FormalGreenWhiteVault() {
                       <iframe
                         src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl)}`}
                         className={`w-full rounded border border-emerald-200 bg-white ${
-                          isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[520px]"
+                          isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
                         }`}
                         title="Office Document Preview"
                       ></iframe>
@@ -1167,14 +1291,14 @@ export default function FormalGreenWhiteVault() {
                       src={previewUrl}
                       alt={previewItem.title}
                       className={`object-contain rounded shadow-md ${
-                        isPreviewMaximized ? "max-h-[calc(100vh-180px)]" : "max-h-[500px]"
+                        isPreviewMaximized ? "max-h-[calc(100vh-180px)]" : "max-h-[380px] sm:max-h-[500px]"
                       }`}
                     />
                   ) : previewItem.file_name?.endsWith(".pdf") ? (
                     <iframe
                       src={previewUrl}
                       className={`w-full rounded border border-emerald-200 bg-white ${
-                        isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[520px]"
+                        isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
                       }`}
                       title="PDF Preview"
                     ></iframe>
