@@ -47,6 +47,7 @@ import {
   uploadDocumentDirect,
   getPresignedUploadUrl,
   addDocumentMetadata,
+  getPresignedViewUrl,
   getPresignedDownloadUrl,
   deleteVaultItem,
   renameVaultItem,
@@ -68,7 +69,8 @@ export default function FormalGreenWhiteVault() {
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; title: string }[]>([]);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "document" | "password" | "note">("all");
+  type FilterCategory = "all" | "document" | "pdf" | "word" | "pptx" | "excel" | "image" | "code" | "password" | "note";
+  const [filterType, setFilterType] = useState<FilterCategory>("all");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Items & folders cache
@@ -292,16 +294,16 @@ export default function FormalGreenWhiteVault() {
     setIsPreviewMaximized(false);
 
     if (item.type === "document" && item.storage_key && item.file_name) {
-      const res = await getPresignedDownloadUrl(item.storage_key, item.file_name);
-      if (res.success && res.downloadUrl) {
-        setPreviewUrl(res.downloadUrl);
+      const res = await getPresignedViewUrl(item.storage_key, item.file_name);
+      if (res.success && res.viewUrl) {
+        setPreviewUrl(res.viewUrl);
 
         // Fetch raw text for text/code files
         const ext = item.file_name.split(".").pop()?.toLowerCase() || "";
         if (["txt", "json", "js", "ts", "jsx", "tsx", "py", "md", "html", "css", "csv", "log"].includes(ext)) {
           setIsLoadingText(true);
           try {
-            const text = await fetch(res.downloadUrl).then((r) => r.text());
+            const text = await fetch(res.viewUrl).then((r) => r.text());
             setPreviewTextContent(text);
           } catch (err) {
             console.error("Failed to load text preview:", err);
@@ -405,13 +407,59 @@ export default function FormalGreenWhiteVault() {
         item.file_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.notes?.toLowerCase().includes(searchQuery.toLowerCase());
 
-      if (filterType === "all") return matchesSearch;
-      if (filterType === "document") return item.type === "document" && matchesSearch;
-      if (filterType === "password") return (item.type === "password" || item.type === "credential") && matchesSearch;
-      if (filterType === "note") return item.type === "note" && matchesSearch;
-      return matchesSearch;
+      if (!matchesSearch) return false;
+      if (filterType === "all") return true;
+
+      const ext = item.file_name?.split(".").pop()?.toLowerCase() || "";
+
+      if (filterType === "pdf") return item.type === "document" && ext === "pdf";
+      if (filterType === "word") return item.type === "document" && ["doc", "docx", "rtf", "odt"].includes(ext);
+      if (filterType === "pptx") return item.type === "document" && ["ppt", "pptx", "key", "odp"].includes(ext);
+      if (filterType === "excel") return item.type === "document" && ["xls", "xlsx", "csv", "ods"].includes(ext);
+      if (filterType === "image") return item.type === "document" && ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"].includes(ext);
+      if (filterType === "code") return item.type === "document" && ["js", "ts", "json", "py", "html", "css", "sh", "jsx", "tsx"].includes(ext);
+      if (filterType === "document") return item.type === "document";
+      if (filterType === "password") return item.type === "password" || item.type === "credential";
+      if (filterType === "note") return item.type === "note";
+
+      return true;
     });
   }, [items, searchQuery, filterType]);
+
+  // Compute count for each filter category
+  const filterCounts = useMemo(() => {
+    const counts = {
+      all: items.length,
+      pdf: 0,
+      word: 0,
+      pptx: 0,
+      excel: 0,
+      image: 0,
+      code: 0,
+      document: 0,
+      password: 0,
+      note: 0,
+    };
+
+    items.forEach((item) => {
+      if (item.type === "document") {
+        counts.document++;
+        const ext = item.file_name?.split(".").pop()?.toLowerCase() || "";
+        if (ext === "pdf") counts.pdf++;
+        if (["doc", "docx", "rtf", "odt"].includes(ext)) counts.word++;
+        if (["ppt", "pptx", "key", "odp"].includes(ext)) counts.pptx++;
+        if (["xls", "xlsx", "csv", "ods"].includes(ext)) counts.excel++;
+        if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"].includes(ext)) counts.image++;
+        if (["js", "ts", "json", "py", "html", "css", "sh", "jsx", "tsx"].includes(ext)) counts.code++;
+      } else if (item.type === "password" || item.type === "credential") {
+        counts.password++;
+      } else if (item.type === "note") {
+        counts.note++;
+      }
+    });
+
+    return counts;
+  }, [items]);
 
   // Helpers for file icons & sizes
   const formatBytes = (bytes: number | null) => {
@@ -581,8 +629,8 @@ export default function FormalGreenWhiteVault() {
               </button>
             </div>
 
-            <div className="space-y-2">
-              <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3">
+            <div className="space-y-1.5">
+              <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-1">
                 File Categories
               </p>
               <button
@@ -590,48 +638,143 @@ export default function FormalGreenWhiteVault() {
                   setFilterType("all");
                   setMobileSidebarOpen(false);
                 }}
-                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                  filterType === "all" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "all" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
                 }`}
               >
-                <FolderOpen className="h-4 w-4" />
-                All Contents
+                <div className="flex items-center gap-2">
+                  <FolderOpen className="h-4 w-4" />
+                  <span>All Contents</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.all}</span>
               </button>
+
               <button
                 onClick={() => {
-                  setFilterType("document");
+                  setFilterType("pdf");
                   setMobileSidebarOpen(false);
                 }}
-                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                  filterType === "document" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "pdf" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
                 }`}
               >
-                <File className="h-4 w-4 text-emerald-600" />
-                Documents & Files
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-700" />
+                  <span>PDF Documents</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pdf}</span>
               </button>
+
+              <button
+                onClick={() => {
+                  setFilterType("word");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "word" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <span>Word Files</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.word}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setFilterType("pptx");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "pptx" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <File className="h-4 w-4 text-emerald-600" />
+                  <span>PowerPoint</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pptx}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setFilterType("excel");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "excel" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Grid className="h-4 w-4 text-emerald-600" />
+                  <span>Excel Sheets</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.excel}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setFilterType("image");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "image" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <FileImage className="h-4 w-4 text-emerald-600" />
+                  <span>Images & Photos</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.image}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setFilterType("code");
+                  setMobileSidebarOpen(false);
+                }}
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "code" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <FileCode className="h-4 w-4 text-emerald-700" />
+                  <span>Code & Scripts</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.code}</span>
+              </button>
+
               <button
                 onClick={() => {
                   setFilterType("password");
                   setMobileSidebarOpen(false);
                 }}
-                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                  filterType === "password" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "password" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
                 }`}
               >
-                <Key className="h-4 w-4 text-emerald-700" />
-                Logins & Passwords
+                <div className="flex items-center gap-2">
+                  <Key className="h-4 w-4 text-emerald-700" />
+                  <span>Logins & Passwords</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.password}</span>
               </button>
+
               <button
                 onClick={() => {
                   setFilterType("note");
                   setMobileSidebarOpen(false);
                 }}
-                className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                  filterType === "note" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+                className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                  filterType === "note" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
                 }`}
               >
-                <FileText className="h-4 w-4 text-emerald-600" />
-                Secure Notes
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <span>Secure Notes</span>
+                </div>
+                <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.note}</span>
               </button>
             </div>
 
@@ -677,45 +820,117 @@ export default function FormalGreenWhiteVault() {
       <div className="flex-1 flex max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-6 gap-6">
         {/* Left Sidebar Navigation (Desktop) */}
         <aside className="hidden lg:block w-64 shrink-0 space-y-6">
-          <div className="rounded-xl glass-panel p-4 space-y-2 border border-emerald-100">
-            <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-2">
+          <div className="rounded-xl glass-panel p-4 space-y-1.5 border border-emerald-100">
+            <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-1">
               File Categories
             </p>
             <button
               onClick={() => setFilterType("all")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                filterType === "all" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "all" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
               }`}
             >
-              <FolderOpen className="h-4 w-4" />
-              All Contents
+              <div className="flex items-center gap-2">
+                <FolderOpen className="h-4 w-4" />
+                <span>All Contents</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.all}</span>
             </button>
             <button
-              onClick={() => setFilterType("document")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                filterType === "document" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+              onClick={() => setFilterType("pdf")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "pdf" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
               }`}
             >
-              <File className="h-4 w-4 text-emerald-600" />
-              Documents & Files
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-emerald-700" />
+                <span>PDF Documents</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pdf}</span>
+            </button>
+            <button
+              onClick={() => setFilterType("word")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "word" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-emerald-600" />
+                <span>Word Files</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.word}</span>
+            </button>
+            <button
+              onClick={() => setFilterType("pptx")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "pptx" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <File className="h-4 w-4 text-emerald-600" />
+                <span>PowerPoint</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pptx}</span>
+            </button>
+            <button
+              onClick={() => setFilterType("excel")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "excel" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Grid className="h-4 w-4 text-emerald-600" />
+                <span>Excel Sheets</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.excel}</span>
+            </button>
+            <button
+              onClick={() => setFilterType("image")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "image" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <FileImage className="h-4 w-4 text-emerald-600" />
+                <span>Images & Photos</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.image}</span>
+            </button>
+            <button
+              onClick={() => setFilterType("code")}
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "code" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <FileCode className="h-4 w-4 text-emerald-700" />
+                <span>Code & Scripts</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.code}</span>
             </button>
             <button
               onClick={() => setFilterType("password")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                filterType === "password" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "password" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
               }`}
             >
-              <Key className="h-4 w-4 text-emerald-700" />
-              Logins & Passwords
+              <div className="flex items-center gap-2">
+                <Key className="h-4 w-4 text-emerald-700" />
+                <span>Logins & Passwords</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.password}</span>
             </button>
             <button
               onClick={() => setFilterType("note")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                filterType === "note" ? "bg-emerald-800 text-white shadow-sm shadow-emerald-900/10" : "text-emerald-900 hover:bg-emerald-50"
+              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
+                filterType === "note" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
               }`}
             >
-              <FileText className="h-4 w-4 text-emerald-600" />
-              Secure Notes
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-emerald-600" />
+                <span>Secure Notes</span>
+              </div>
+              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.note}</span>
             </button>
           </div>
 
@@ -1294,14 +1509,16 @@ export default function FormalGreenWhiteVault() {
                         isPreviewMaximized ? "max-h-[calc(100vh-180px)]" : "max-h-[380px] sm:max-h-[500px]"
                       }`}
                     />
-                  ) : previewItem.file_name?.endsWith(".pdf") ? (
-                    <iframe
-                      src={previewUrl}
-                      className={`w-full rounded border border-emerald-200 bg-white ${
-                        isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
-                      }`}
-                      title="PDF Preview"
-                    ></iframe>
+                  ) : previewItem.file_name?.match(/\.pdf$/i) ? (
+                    <div className="w-full h-full flex flex-col items-center">
+                      <iframe
+                        src={`${previewUrl}#toolbar=1`}
+                        className={`w-full rounded border border-emerald-200 bg-white ${
+                          isPreviewMaximized ? "h-[calc(100vh-180px)]" : "h-[380px] sm:h-[520px]"
+                        }`}
+                        title="PDF Preview"
+                      ></iframe>
+                    </div>
                   ) : previewItem.file_name?.match(/\.(mp4|webm|ogg|mov)$/i) ? (
                     <video
                       controls
