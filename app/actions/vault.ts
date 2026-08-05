@@ -11,6 +11,14 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { revalidatePath } from "next/cache";
 
+function safeRevalidatePath(path: string = "/") {
+  try {
+    revalidatePath(path);
+  } catch (e) {
+    // Ignore static generation store missing error
+  }
+}
+
 export interface VaultItem {
   id: string;
   title: string;
@@ -26,8 +34,10 @@ export interface VaultItem {
   file_size: number | null;
   storage_key: string | null;
 
-  // Hierarchy
+  // Hierarchy & Status
   parent_id: string | null;
+  is_favorite?: boolean;
+  status?: "active" | "archived" | "trash";
 
   created_at: string;
   updated_at: string;
@@ -51,10 +61,22 @@ export async function initDatabase() {
         file_type VARCHAR(100),
         file_size INTEGER,
         storage_key VARCHAR(500),
+        blind_index_tokens TEXT,
+        is_favorite BOOLEAN DEFAULT FALSE,
+        status VARCHAR(20) DEFAULT 'active',
         parent_id UUID REFERENCES vault_items(id) ON DELETE CASCADE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+    `;
+    await sql`
+      ALTER TABLE vault_items ADD COLUMN IF NOT EXISTS blind_index_tokens TEXT;
+    `;
+    await sql`
+      ALTER TABLE vault_items ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT FALSE;
+    `;
+    await sql`
+      ALTER TABLE vault_items ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
     `;
     return { success: true };
   } catch (error: any) {
@@ -71,16 +93,16 @@ export async function getVaultItems(parentId: string | null = null) {
     let items;
     if (parentId === null) {
       items = await sql`
-        SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, created_at, updated_at
+        SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, is_favorite, COALESCE(status, 'active') as status, created_at, updated_at
         FROM vault_items
-        WHERE parent_id IS NULL AND type != 'vault_verification'
+        WHERE parent_id IS NULL AND type != 'vault_verification' AND (status = 'active' OR status IS NULL)
         ORDER BY type = 'folder' DESC, created_at DESC
       `;
     } else {
       items = await sql`
-        SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, created_at, updated_at
+        SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, is_favorite, COALESCE(status, 'active') as status, created_at, updated_at
         FROM vault_items
-        WHERE parent_id = ${parentId} AND type != 'vault_verification'
+        WHERE parent_id = ${parentId} AND type != 'vault_verification' AND (status = 'active' OR status IS NULL)
         ORDER BY type = 'folder' DESC, created_at DESC
       `;
     }
@@ -151,7 +173,7 @@ export async function addFolder(title: string, parentId: string | null) {
       VALUES (${folderTitle}, 'folder', ${parentId})
     `;
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to add folder:", error);
@@ -189,7 +211,7 @@ export async function addCredentialItem(item: {
       VALUES (${title}, ${type}, ${username}, ${secret}, ${url}, ${notes}, ${parentId})
     `;
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to add credential item:", error);
@@ -239,7 +261,7 @@ export async function uploadDocumentDirect(formData: FormData) {
       VALUES (${title}, 'document', ${file.name}, ${fileType}, ${fileSize}, ${storageKey}, ${notes}, ${parentId})
     `;
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to upload document via server action:", error);
@@ -305,7 +327,7 @@ export async function addDocumentMetadata(item: {
       VALUES (${title}, 'document', ${fileName}, ${fileType}, ${fileSize}, ${storageKey}, ${notes}, ${parentId})
     `;
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to save document metadata:", error);
@@ -387,7 +409,43 @@ async function collectFolderDocuments(folderId: string): Promise<{ id: string; s
 }
 
 /**
- * Deletes a vault item. If it is a folder, deletes all sub-contents and their R2 files.
+ * Helper to recursively delete an item and all its subfolders/files bottom-up.
+ */
+async function deleteVaultItemRecursive(id: string) {
+  // Fetch children first and delete them recursively
+  const children = await sql`
+    SELECT id FROM vault_items WHERE parent_id = ${id}
+  `;
+  for (const child of children as any[]) {
+    await deleteVaultItemRecursive(child.id);
+  }
+
+  // Fetch item storage_key to clean R2
+  const items = await sql`
+    SELECT id, storage_key FROM vault_items WHERE id = ${id}
+  `;
+  if (items.length > 0) {
+    const item = items[0] as any;
+    if (item.storage_key) {
+      try {
+        await s3.send(
+          new DeleteObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: item.storage_key,
+          })
+        );
+      } catch (e) {
+        console.warn(`Failed to delete R2 file (${item.storage_key}):`, e);
+      }
+    }
+    await sql`
+      DELETE FROM vault_items WHERE id = ${id}
+    `;
+  }
+}
+
+/**
+ * Deletes a vault item. If it is a folder, recursively deletes all children and their R2 files.
  */
 export async function deleteVaultItem(id: string) {
   try {
@@ -395,50 +453,9 @@ export async function deleteVaultItem(id: string) {
       return { success: false, error: "Item ID is required." };
     }
 
-    // 1. Fetch item to verify type
-    const items = await sql`
-      SELECT id, type, storage_key 
-      FROM vault_items 
-      WHERE id = ${id}
-    `;
+    await deleteVaultItemRecursive(id);
 
-    if (items.length === 0) {
-      return { success: false, error: "Item not found." };
-    }
-
-    const item = items[0] as unknown as { type: string; storage_key: string | null };
-
-    // 2. Gather physical files to delete from R2
-    const filesToDelete: string[] = [];
-
-    if (item.type === "document" && item.storage_key) {
-      filesToDelete.push(item.storage_key);
-    } else if (item.type === "folder") {
-      const subdocs = await collectFolderDocuments(id);
-      subdocs.forEach((doc) => {
-        if (doc.storage_key) filesToDelete.push(doc.storage_key);
-      });
-    }
-
-    // 3. Delete physical files from R2
-    for (const key of filesToDelete) {
-      try {
-        await s3.send(new DeleteObjectCommand({
-          Bucket: BUCKET_NAME,
-          Key: key,
-        }));
-      } catch (s3Error) {
-        console.error(`Warning: Failed to delete R2 file (${key}):`, s3Error);
-      }
-    }
-
-    // 4. Delete from database (folder cascade deletes children automatically in DB)
-    await sql`
-      DELETE FROM vault_items
-      WHERE id = ${id}
-    `;
-
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to delete vault item:", error);
@@ -487,7 +504,7 @@ export async function renameVaultItem(id: string, newTitle: string) {
       `;
     }
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to rename item:", error);
@@ -524,7 +541,7 @@ export async function moveVaultItem(id: string, targetParentId: string | null) {
       WHERE id = ${id}
     `;
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to move item:", error);
@@ -629,7 +646,7 @@ export async function copyVaultItem(id: string, targetParentId: string | null) {
       `;
     }
 
-    revalidatePath("/");
+    safeRevalidatePath("/");
     return { success: true };
   } catch (error: any) {
     console.error("Failed to copy item:", error);
@@ -688,4 +705,147 @@ export async function resetMasterVerificationToken() {
     return { success: false, error: error.message };
   }
 }
+
+/**
+ * Searches vault items using Searchable Symmetric Encryption (SSE) blind index tokens.
+ */
+export async function searchVaultItemsByBlindToken(blindTokenHex: string) {
+  try {
+    const pattern = `%${blindTokenHex}%`;
+    const items = await sql`
+      SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, created_at, updated_at
+      FROM vault_items
+      WHERE blind_index_tokens LIKE ${pattern} AND type != 'vault_verification'
+      ORDER BY created_at DESC
+    `;
+    return { success: true, data: items as unknown as VaultItem[] };
+  } catch (error: any) {
+    console.error("Failed to search by blind token:", error);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * Toggles favorite state of a vault item.
+ */
+export async function toggleFavoriteItem(id: string) {
+  try {
+    await sql`
+      UPDATE vault_items
+      SET is_favorite = NOT COALESCE(is_favorite, FALSE),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+    `;
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to toggle favorite:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Updates item status ('active' | 'archived' | 'trash').
+ */
+async function setItemStatusRecursive(id: string, status: "active" | "archived" | "trash") {
+  await sql`
+    UPDATE vault_items
+    SET status = ${status},
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ${id}
+  `;
+  const children = await sql`
+    SELECT id FROM vault_items WHERE parent_id = ${id}
+  `;
+  for (const child of children as any[]) {
+    await setItemStatusRecursive(child.id, status);
+  }
+}
+
+/**
+ * Updates the status of an item ('active' | 'archived' | 'trash') and all its children recursively.
+ */
+export async function setItemStatus(id: string, status: "active" | "archived" | "trash") {
+  try {
+    await setItemStatusRecursive(id, status);
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to update item status:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Fetches all items marked as Favorite.
+ */
+export async function getFavoriteItems() {
+  try {
+    const items = await sql`
+      SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, is_favorite, COALESCE(status, 'active') as status, created_at, updated_at
+      FROM vault_items
+      WHERE is_favorite = TRUE AND (status = 'active' OR status IS NULL) AND type != 'vault_verification'
+      ORDER BY updated_at DESC
+    `;
+    return { success: true, data: items as unknown as VaultItem[] };
+  } catch (error: any) {
+    console.error("Failed to fetch favorite items:", error);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * Fetches all Archived items.
+ */
+export async function getArchivedItems() {
+  try {
+    const items = await sql`
+      SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, is_favorite, COALESCE(status, 'active') as status, created_at, updated_at
+      FROM vault_items
+      WHERE status = 'archived' AND type != 'vault_verification'
+      ORDER BY updated_at DESC
+    `;
+    return { success: true, data: items as unknown as VaultItem[] };
+  } catch (error: any) {
+    console.error("Failed to fetch archived items:", error);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * Fetches all Trash items.
+ */
+export async function getTrashItems() {
+  try {
+    const items = await sql`
+      SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, is_favorite, COALESCE(status, 'active') as status, created_at, updated_at
+      FROM vault_items
+      WHERE status = 'trash' AND type != 'vault_verification'
+      ORDER BY updated_at DESC
+    `;
+    return { success: true, data: items as unknown as VaultItem[] };
+  } catch (error: any) {
+    console.error("Failed to fetch trash items:", error);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * Permanently deletes all items in the Trash bin.
+ */
+export async function emptyTrash() {
+  try {
+    const trashItems = await sql`
+      SELECT id FROM vault_items WHERE status = 'trash' AND type != 'vault_verification'
+    `;
+    for (const item of trashItems as any[]) {
+      await deleteVaultItem(item.id);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to empty trash:", error);
+    return { success: false, error: error.message };
+  }
+}
+
 

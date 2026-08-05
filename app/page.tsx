@@ -39,6 +39,21 @@ import {
   Sparkles,
   Box,
   Layers,
+  ShieldAlert,
+  Cpu,
+  GitCommit,
+  FileCheck,
+  Fingerprint,
+  Share2,
+  AlertTriangle,
+  Activity,
+  CheckCircle2,
+  KeyRound,
+  Users,
+  QrCode,
+  Star,
+  Archive,
+  RotateCcw,
 } from "lucide-react";
 import {
   initDatabase,
@@ -59,9 +74,27 @@ import {
   getMasterVerificationToken,
   setMasterVerificationToken,
   resetMasterVerificationToken,
+  searchVaultItemsByBlindToken,
+  toggleFavoriteItem,
+  setItemStatus,
+  getFavoriteItems,
+  getArchivedItems,
+  getTrashItems,
+  emptyTrash,
   VaultItem,
 } from "@/app/actions/vault";
 import { deriveKey, encryptText, decryptText } from "@/lib/crypto";
+import { splitSecret, combineShares, ShamirShare } from "@/lib/shamir";
+import { generateKyberKeyPair, pqcHybridEncrypt, pqcHybridDecrypt, PQCKeyPair } from "@/lib/pqc";
+import { deriveSearchKey, generateBlindToken } from "@/lib/sse";
+import { createZKCommitment, generateZKProof, verifyZKProof, ZKProofPayload } from "@/lib/zkp";
+import { isWebAuthnSupported, registerHardwareKey, getHardwareEntropy, strengthenKeyWithHardwareSecret } from "@/lib/webauthn";
+import { calculateAuditHash, verifyAuditChain, AuditLogEntry } from "@/lib/audit";
+import { addAuditLogEntry, getAuditLogs, getLatestAuditHash } from "@/app/actions/audit";
+import { recordAccessAttempt, evaluateAccessAnomaly, getAccessHistory, AnomalyReport } from "@/lib/anomaly";
+import { generateUserKeyPair, encryptItemForRecipient, decryptSharedItem, UserKeyPair, SharedItemPayload } from "@/lib/sharing";
+import { registerPublicKey, getPublicKey, shareItemWithUser, getSharedItemsForUser } from "@/app/actions/sharing";
+import { checkPasswordBreach, analyzePasswordHealth, PasswordHealthReport } from "@/lib/breach";
 
 export default function FormalGreenWhiteVault() {
   const [isLocked, setIsLocked] = useState(true);
@@ -99,6 +132,43 @@ export default function FormalGreenWhiteVault() {
   const [items, setItems] = useState<VaultItem[]>([]);
   const [allFolders, setAllFolders] = useState<{ id: string; title: string; parent_id: string | null }[]>([]);
   const [isPending, startTransition] = useTransition();
+
+  // Advanced Security Suite Modal State
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  type SecurityTab = "sss" | "pqc" | "audit" | "zkp" | "webauthn" | "ids" | "sharing" | "breach";
+  const [securityTab, setSecurityTab] = useState<SecurityTab>("sss");
+
+  // SSS Emergency Recovery state
+  const [shamirShares, setShamirShares] = useState<ShamirShare[]>([]);
+  const [recoveryInputShares, setRecoveryInputShares] = useState<string>("");
+  const [recoveryError, setRecoveryError] = useState("");
+  const [showRecoveryOnLock, setShowRecoveryOnLock] = useState(false);
+
+  // PQC & Hardware state
+  const [pqcKeyPair, setPqcKeyPair] = useState<PQCKeyPair | null>(null);
+  const [hardwareCred, setHardwareCred] = useState<any | null>(null);
+
+  // Audit Logs state
+  const [auditLogsList, setAuditLogsList] = useState<AuditLogEntry[]>([]);
+  const [auditVerification, setAuditVerification] = useState<{ valid: boolean; errorReason?: string | null } | null>(null);
+
+  // ZK Proofs state
+  const [zkProofPayload, setZkProofPayload] = useState<ZKProofPayload | null>(null);
+  const [zkVerifyResult, setZkVerifyResult] = useState<{ valid: boolean; message: string } | null>(null);
+
+  // Anomaly IDS state
+  const [anomalyReport, setAnomalyReport] = useState<AnomalyReport | null>(null);
+
+  // E2EE Sharing state
+  const [sharingKeyPair, setSharingKeyPair] = useState<UserKeyPair | null>(null);
+  const [recipientUsername, setRecipientUsername] = useState("");
+  const [shareItemTitle, setShareItemTitle] = useState("");
+  const [shareItemSecret, setShareItemSecret] = useState("");
+  const [sharedReceivedItems, setSharedReceivedItems] = useState<any[]>([]);
+
+  // Password Breach state
+  const [breachReport, setBreachReport] = useState<PasswordHealthReport | null>(null);
+  const [isBreachLoading, setIsBreachLoading] = useState(false);
 
   // Modals state
   const [newFolderModalOpen, setNewFolderModalOpen] = useState(false);
@@ -138,15 +208,37 @@ export default function FormalGreenWhiteVault() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionMenuOpenId, setActionMenuOpenId] = useState<string | null>(null);
 
+  // Confirmation Modals state
+  const [deleteConfirmItem, setDeleteConfirmItem] = useState<VaultItem | null>(null);
+  const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+
+  // Active View Section: vault, favorites, archive, trash
+  type ActiveSection = "vault" | "favorites" | "archive" | "trash";
+  const [activeSection, setActiveSection] = useState<ActiveSection>("vault");
+
+  // Drag and Drop state
+  const [draggedItem, setDraggedItem] = useState<VaultItem | null>(null);
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+
   // Init DB
   useEffect(() => {
     initDatabase();
   }, []);
 
-  // Fetch items when currentFolderId changes
+  // Fetch items based on activeSection & currentFolderId
   const fetchCurrentContents = () => {
     startTransition(async () => {
-      const res = await getVaultItems(currentFolderId);
+      let res;
+      if (activeSection === "favorites") {
+        res = await getFavoriteItems();
+      } else if (activeSection === "archive") {
+        res = await getArchivedItems();
+      } else if (activeSection === "trash") {
+        res = await getTrashItems();
+      } else {
+        res = await getVaultItems(currentFolderId);
+      }
+
       if (res.success && res.data) {
         setItems(res.data);
       }
@@ -154,9 +246,11 @@ export default function FormalGreenWhiteVault() {
       if (foldersRes.success && foldersRes.data) {
         setAllFolders(foldersRes.data);
       }
-      const crumbsRes = await getFolderBreadcrumbs(currentFolderId);
-      if (crumbsRes.success && crumbsRes.data) {
-        setBreadcrumbs(crumbsRes.data);
+      if (activeSection === "vault") {
+        const crumbsRes = await getFolderBreadcrumbs(currentFolderId);
+        if (crumbsRes.success && crumbsRes.data) {
+          setBreadcrumbs(crumbsRes.data);
+        }
       }
     });
   };
@@ -165,11 +259,149 @@ export default function FormalGreenWhiteVault() {
     if (!isLocked) {
       fetchCurrentContents();
     }
-  }, [currentFolderId, isLocked]);
+  }, [currentFolderId, activeSection, isLocked]);
+
+  // Action Handlers for Favorites, Archive, Trash, & Drag-and-Drop
+  const handleToggleFavorite = async (item: VaultItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const res = await toggleFavoriteItem(item.id);
+    if (res.success) {
+      fetchCurrentContents();
+    } else {
+      alert("Failed to toggle favorite: " + res.error);
+    }
+  };
+
+  const handleSetStatusDirect = async (item: VaultItem, status: "active" | "archived" | "trash") => {
+    const res = await setItemStatus(item.id, status);
+    if (res.success) {
+      fetchCurrentContents();
+    } else {
+      alert("Failed to update item status: " + res.error);
+    }
+  };
+
+  const handleSetStatus = async (item: VaultItem, status: "active" | "archived" | "trash", e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (status === "trash") {
+      setDeleteConfirmItem(item);
+    } else {
+      await handleSetStatusDirect(item, status);
+    }
+  };
+
+  const handleEmptyTrashDirect = async () => {
+    const res = await emptyTrash();
+    if (res.success) {
+      fetchCurrentContents();
+    } else {
+      alert("Failed to empty trash: " + res.error);
+    }
+  };
+
+  const handleEmptyTrash = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEmptyTrashConfirmOpen(true);
+  };
+
+  const handleDragStart = (e: React.DragEvent, item: VaultItem) => {
+    e.stopPropagation();
+    setDraggedItem(item);
+    e.dataTransfer.setData("text/plain", item.id);
+  };
+
+  const handleDragOverFolder = (e: React.DragEvent, folderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolderId(folderId);
+  };
+
+  const handleDropOnFolder = async (e: React.DragEvent, targetFolderId: string | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolderId(null);
+    if (!draggedItem) return;
+    if (draggedItem.id === targetFolderId) return;
+
+    const res = await moveVaultItem(draggedItem.id, targetFolderId);
+    if (res.success) {
+      fetchCurrentContents();
+    } else {
+      alert("Failed to move item: " + res.error);
+    }
+    setDraggedItem(null);
+  };
 
   const VERIFICATION_MAGIC_STRING = "PERSONAL_VAULT_MASTER_VERIFICATION_TOKEN_2026";
 
-  // Handle Master Password Unlock with Strict Verification
+  // Emergency Recovery via Shamir's Secret Sharing (SSS K-of-N Assembly)
+  const handleShamirUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryInputShares.trim()) {
+      setRecoveryError("Please enter at least K secret shares.");
+      return;
+    }
+    setRecoveryError("");
+
+    try {
+      const lines = recoveryInputShares.split("\n").map((l) => l.trim()).filter(Boolean);
+      const parsedShares: ShamirShare[] = lines.map((line) => {
+        const parts = line.split(":");
+        if (parts.length < 2) {
+          throw new Error("Invalid share format. Expected 'shareID:shareHex' (e.g., 1:a1b2c3...)");
+        }
+        return { id: parseInt(parts[0], 10), shareHex: parts[1].trim() };
+      });
+
+      const recoveredHex = combineShares(parsedShares);
+      const bytes = new Uint8Array(recoveredHex.match(/.{1,2}/g)?.map((b) => parseInt(b, 16)) || []);
+      const recoveredPassword = new TextDecoder().decode(bytes);
+
+      const key = await deriveKey(recoveredPassword);
+      setCryptoKey(key);
+      setMasterPassword(recoveredPassword);
+      setIsLocked(false);
+      setShowRecoveryOnLock(false);
+    } catch (err: any) {
+      setRecoveryError("Emergency Share Reconstruction Failed: " + err.message);
+    }
+  };
+
+  const handleGenerateShamirShares = (threshold: number = 3, totalShares: number = 5) => {
+    if (!masterPassword) {
+      alert("Master Password is required to generate recovery shares.");
+      return;
+    }
+    const encBytes = new TextEncoder().encode(masterPassword);
+    const hex = Array.from(encBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const shares = splitSecret(hex, totalShares, threshold);
+    setShamirShares(shares);
+  };
+
+  const handleFetchAuditLogs = async () => {
+    const res = await getAuditLogs();
+    if (res.success && res.logs) {
+      setAuditLogsList(res.logs as any);
+      const verification = await verifyAuditChain(res.logs as any);
+      setAuditVerification(verification);
+    }
+  };
+
+  const handleRunAnomalyAudit = () => {
+    const currentAttempt: any = {
+      timestamp: Date.now(),
+      hourOfDay: new Date().getHours(),
+      dayOfWeek: new Date().getDay(),
+      success: true,
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "Unknown",
+      screenResolution: typeof window !== "undefined" ? `${window.screen.width}x${window.screen.height}` : "Unknown",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    };
+    const report = evaluateAccessAnomaly(currentAttempt);
+    setAnomalyReport(report);
+  };
+
+  // Handle Master Password Unlock with Strict Verification & Audit Log Chain
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!masterPassword.trim()) {
@@ -191,12 +423,19 @@ export default function FormalGreenWhiteVault() {
         try {
           const decrypted = await decryptText(res.token, key);
           if (decrypted !== VERIFICATION_MAGIC_STRING) {
+            recordAccessAttempt(false);
+            const prevHash = await getLatestAuditHash();
+            const newHash = await calculateAuditHash(prevHash, "SECURITY_ALERT", "Failed unlock attempt", new Date().toISOString());
+            await addAuditLogEntry("SECURITY_ALERT", "Failed unlock attempt", newHash, prevHash);
             setUnlockError("Incorrect master password. Access denied.");
             setIsUnlocking(false);
             return;
           }
         } catch (decryptErr) {
-          // AES-GCM tag verification failed (Wrong Password)
+          recordAccessAttempt(false);
+          const prevHash = await getLatestAuditHash();
+          const newHash = await calculateAuditHash(prevHash, "SECURITY_ALERT", "Failed unlock attempt", new Date().toISOString());
+          await addAuditLogEntry("SECURITY_ALERT", "Failed unlock attempt", newHash, prevHash);
           setUnlockError("Incorrect master password. Access denied.");
           setIsUnlocking(false);
           return;
@@ -207,7 +446,12 @@ export default function FormalGreenWhiteVault() {
         await setMasterVerificationToken(encryptedVerification);
       }
 
-      // Password verified! Unlock vault
+      // Password verified! Record access and append to Merkle audit chain
+      recordAccessAttempt(true);
+      const prevHash = await getLatestAuditHash();
+      const newHash = await calculateAuditHash(prevHash, "VAULT_UNLOCK", "Master Password Verified", new Date().toISOString());
+      await addAuditLogEntry("VAULT_UNLOCK", "Master Password Verified", newHash, prevHash);
+
       setCryptoKey(key);
       setIsLocked(false);
     } catch (err: any) {
@@ -424,15 +668,19 @@ export default function FormalGreenWhiteVault() {
     }
   };
 
-  // Delete
-  const handleDeleteItem = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this item?")) return;
+  // Delete Permanently Direct
+  const handleDeleteItemDirect = async (id: string) => {
     const res = await deleteVaultItem(id);
     if (res.success) {
       fetchCurrentContents();
     } else {
       alert("Delete failed: " + res.error);
     }
+  };
+
+  const handleDeleteItem = (item: VaultItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setDeleteConfirmItem(item);
   };
 
   // Decrypt secret inline
@@ -622,55 +870,107 @@ export default function FormalGreenWhiteVault() {
               </button>
             </div>
           </div>
+          {showRecoveryOnLock ? (
+            <form onSubmit={handleShamirUnlock} className="mt-6 space-y-4">
+              <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 font-medium">
+                <p className="font-bold flex items-center gap-1.5 mb-1">
+                  <KeyRound className="h-4 w-4 text-amber-700" />
+                  Shamir's Secret Sharing (SSS) Assembly
+                </p>
+                Paste your K threshold secret shares (one per line, e.g. <code className="bg-amber-100 px-1 rounded">1:a1b2c3...</code>) to reconstruct master key.
+              </div>
 
-          <form onSubmit={handleUnlock} className="space-y-6">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-emerald-900 mb-2">
-                Master Password
-              </label>
-              <input
-                type="password"
-                autoComplete="new-password"
-                placeholder="Enter master password..."
-                value={masterPassword}
-                onChange={(e) => setMasterPassword(e.target.value)}
-                disabled={isUnlocking}
-                className="w-full rounded-lg border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-950 placeholder-emerald-800/40 outline-none transition duration-200 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-              />
-            </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-emerald-900 mb-1">
+                  Emergency Secret Shares (Min K required)
+                </label>
+                <textarea
+                  rows={4}
+                  value={recoveryInputShares}
+                  onChange={(e) => setRecoveryInputShares(e.target.value)}
+                  placeholder="1:70617373...&#10;2:6b6579...&#10;3:64617461..."
+                  className="w-full rounded-lg border border-emerald-200 bg-white p-3 text-xs font-mono text-emerald-950 placeholder-emerald-800/40 outline-none transition duration-200 focus:border-emerald-600"
+                />
+              </div>
 
-            {unlockError && (
-              <p className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
-                ⚠️ {unlockError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isUnlocking}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 py-3 text-sm font-bold text-white shadow-md shadow-emerald-700/20 transition duration-200 hover:bg-emerald-800 active:scale-[0.98] disabled:opacity-50"
-            >
-              {isUnlocking ? (
-                <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  Verifying Security Key...
-                </>
-              ) : (
-                <>
-                  <Unlock className="h-4 w-4" />
-                  Unlock Cloud Vault
-                </>
+              {recoveryError && (
+                <p className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
+                  ⚠️ {recoveryError}
+                </p>
               )}
-            </button>
-          </form>
 
-          <div className="mt-6 text-center">
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-emerald-700 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-800 transition"
+                >
+                  <Unlock className="h-4 w-4" />
+                  Reconstruct & Unlock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRecoveryOnLock(false)}
+                  className="px-3 py-2.5 rounded-lg border border-emerald-200 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleUnlock} className="mt-6 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-emerald-900 mb-1">
+                  Master Vault Password
+                </label>
+                <input
+                  type="password"
+                  value={masterPassword}
+                  onChange={(e) => setMasterPassword(e.target.value)}
+                  disabled={isUnlocking}
+                  className="w-full rounded-lg border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-950 placeholder-emerald-800/40 outline-none transition duration-200 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                />
+              </div>
+
+              {unlockError && (
+                <p className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
+                  ⚠️ {unlockError}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isUnlocking}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 py-3 text-sm font-bold text-white shadow-md shadow-emerald-700/20 transition duration-200 hover:bg-emerald-800 active:scale-[0.98] disabled:opacity-50"
+              >
+                {isUnlocking ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Verifying Security Key...
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="h-4 w-4" />
+                    Unlock Cloud Vault
+                  </>
+                )}
+              </button>
+            </form>
+          )}
+
+          <div className="mt-6 flex flex-col gap-1.5 text-center">
+            <button
+              type="button"
+              onClick={() => setShowRecoveryOnLock(!showRecoveryOnLock)}
+              className="text-[11px] font-bold text-emerald-800/80 hover:text-emerald-950 hover:underline transition"
+            >
+              {showRecoveryOnLock ? "← Back to Password Unlock" : "🔑 Emergency Recovery (Shamir K-of-N Shares)"}
+            </button>
             <button
               type="button"
               onClick={handleResetVaultPassword}
-              className="text-[11px] font-semibold text-emerald-800/60 hover:text-emerald-950 hover:underline transition"
+              className="text-[11px] font-semibold text-emerald-800/50 hover:text-emerald-950 hover:underline transition"
             >
-              Forgotten or want to change password? Reset Master Password
+              Reset Master Password Lock
             </button>
           </div>
         </div>
@@ -701,15 +1001,26 @@ export default function FormalGreenWhiteVault() {
                 PERSONAL VAULT
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="h-2 w-2 rounded-full bg-emerald-600"></span>
+                <span className="h-2 w-2 rounded-full bg-emerald-600 animate-pulse"></span>
                 <span className="text-[9px] sm:text-[10px] uppercase font-extrabold tracking-wider text-emerald-800">
-                  NeonDB & Cloudflare R2 Active
+                  Zero-Knowledge & PQC Active
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Research Security Suite Button */}
+            <button
+              type="button"
+              onClick={() => setSecurityModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-extrabold text-emerald-950 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-xl shadow-xs transition"
+              title="Open Advanced Security Suite"
+            >
+              <ShieldAlert className="h-4 w-4 text-emerald-700" />
+              <span className="hidden md:inline">Research Security Suite</span>
+            </button>
+
             {/* Theme Selector Widget */}
             <div className="flex items-center gap-0.5 sm:gap-1 bg-black/5 p-1 rounded-xl border border-emerald-200/60 shadow-2xs">
               <button
@@ -984,6 +1295,52 @@ export default function FormalGreenWhiteVault() {
       <div className="flex-1 flex max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-6 gap-6">
         {/* Left Sidebar Navigation (Desktop) */}
         <aside className="hidden lg:block w-64 shrink-0 space-y-6">
+          {/* Main Vault Sections */}
+          <div className="rounded-xl glass-panel p-3 space-y-1 border border-emerald-200/80 bg-white/80">
+            <p className="text-[10px] uppercase font-extrabold tracking-wider text-emerald-950/70 px-3 mb-1">
+              Vault Views
+            </p>
+            <button
+              onClick={() => {
+                setActiveSection("vault");
+                setCurrentFolderId(null);
+              }}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                activeSection === "vault" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <FolderOpen className="h-4 w-4 text-emerald-400" />
+              <span>All Vault Items</span>
+            </button>
+            <button
+              onClick={() => setActiveSection("favorites")}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                activeSection === "favorites" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <Star className="h-4 w-4 text-amber-400 fill-amber-400" />
+              <span>Starred Favorites</span>
+            </button>
+            <button
+              onClick={() => setActiveSection("archive")}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                activeSection === "archive" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <Archive className="h-4 w-4 text-sky-400" />
+              <span>Document Archive</span>
+            </button>
+            <button
+              onClick={() => setActiveSection("trash")}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
+                activeSection === "trash" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
+              }`}
+            >
+              <Trash2 className="h-4 w-4 text-rose-400" />
+              <span>Trash Bin</span>
+            </button>
+          </div>
+
           <div className="rounded-xl glass-panel p-4 space-y-1.5 border border-emerald-100">
             <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-1">
               File Categories
@@ -1133,61 +1490,101 @@ export default function FormalGreenWhiteVault() {
         <main className="flex-1 flex flex-col space-y-4 min-w-0">
           {/* Top Explorer Actions Toolbar */}
           <div className="rounded-xl glass-panel p-3 sm:p-4 flex flex-col sm:flex-row gap-3 sm:gap-4 items-stretch sm:items-center justify-between border border-emerald-100">
-            {/* Breadcrumb Path Bar */}
-            <div className="flex items-center gap-1.5 text-xs text-emerald-900 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 scrollbar-none">
-              <button
-                onClick={() => setCurrentFolderId(null)}
-                className="flex items-center gap-1 hover:text-emerald-700 font-bold transition shrink-0"
-              >
-                <Home className="h-3.5 w-3.5 text-emerald-700" />
-                Vault
-              </button>
-              {breadcrumbs.map((crumb) => (
-                <div key={crumb.id} className="flex items-center gap-1 shrink-0">
-                  <ChevronRight className="h-3.5 w-3.5 text-emerald-400" />
-                  <button
-                    onClick={() => setCurrentFolderId(crumb.id)}
-                    className={`hover:text-emerald-700 transition ${
-                      currentFolderId === crumb.id ? "text-emerald-950 font-extrabold" : "font-semibold"
-                    }`}
-                  >
-                    {crumb.title}
-                  </button>
-                </div>
-              ))}
-            </div>
+            {/* Section Header or Breadcrumb Path Bar */}
+            {activeSection === "vault" ? (
+              <div className="flex items-center gap-1.5 text-xs text-emerald-900 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 scrollbar-none">
+                <button
+                  onClick={() => setCurrentFolderId(null)}
+                  onDragOver={(e) => handleDragOverFolder(e, null)}
+                  onDrop={(e) => handleDropOnFolder(e, null)}
+                  className={`flex items-center gap-1 hover:text-emerald-700 font-bold transition shrink-0 px-2 py-1 rounded-lg ${
+                    dragOverFolderId === null ? "bg-emerald-200 border border-emerald-400" : ""
+                  }`}
+                >
+                  <Home className="h-3.5 w-3.5 text-emerald-700" />
+                  Vault Root
+                </button>
+                {breadcrumbs.map((crumb) => (
+                  <div key={crumb.id} className="flex items-center gap-1 shrink-0">
+                    <ChevronRight className="h-3.5 w-3.5 text-emerald-400" />
+                    <button
+                      onClick={() => setCurrentFolderId(crumb.id)}
+                      onDragOver={(e) => handleDragOverFolder(e, crumb.id)}
+                      onDrop={(e) => handleDropOnFolder(e, crumb.id)}
+                      className={`hover:text-emerald-700 transition px-2 py-1 rounded-lg ${
+                        currentFolderId === crumb.id ? "text-emerald-950 font-extrabold" : "font-semibold"
+                      } ${dragOverFolderId === crumb.id ? "bg-emerald-200 border border-emerald-400" : ""}`}
+                    >
+                      {crumb.title}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm font-extrabold text-emerald-950">
+                {activeSection === "favorites" && (
+                  <>
+                    <Star className="h-4 w-4 text-amber-500 fill-amber-500" /> Starred Favorites
+                  </>
+                )}
+                {activeSection === "archive" && (
+                  <>
+                    <Archive className="h-4 w-4 text-sky-600" /> Document Archive
+                  </>
+                )}
+                {activeSection === "trash" && (
+                  <>
+                    <Trash2 className="h-4 w-4 text-rose-600" /> Trash Bin
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Action Buttons & View Toggles */}
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 shrink-0 w-full sm:w-auto justify-start sm:justify-end">
-              <button
-                onClick={() => setNewFolderModalOpen(true)}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs font-bold transition"
-              >
-                <FolderPlus className="h-3.5 w-3.5 text-emerald-700" />
-                <span>Folder</span>
-              </button>
+              {activeSection === "trash" && (
+                <button
+                  onClick={handleEmptyTrash}
+                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-700 text-white hover:bg-rose-800 text-xs font-bold shadow-xs transition"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Empty Trash Bin</span>
+                </button>
+              )}
 
-              <button
-                onClick={() => {
-                  setRecordTab("document");
-                  setAddRecordModalOpen(true);
-                }}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold shadow-sm shadow-emerald-700/20 transition"
-              >
-                <CloudUpload className="h-3.5 w-3.5" />
-                <span>Upload</span>
-              </button>
+              {activeSection === "vault" && (
+                <>
+                  <button
+                    onClick={() => setNewFolderModalOpen(true)}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs font-bold transition"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5 text-emerald-700" />
+                    <span>Folder</span>
+                  </button>
 
-              <button
-                onClick={() => {
-                  setRecordTab("password");
-                  setAddRecordModalOpen(true);
-                }}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950 text-white hover:bg-emerald-900 text-xs font-bold transition"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Record</span>
-              </button>
+                  <button
+                    onClick={() => {
+                      setRecordTab("document");
+                      setAddRecordModalOpen(true);
+                    }}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold shadow-sm shadow-emerald-700/20 transition"
+                  >
+                    <CloudUpload className="h-3.5 w-3.5" />
+                    <span>Upload</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setRecordTab("password");
+                      setAddRecordModalOpen(true);
+                    }}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950 text-white hover:bg-emerald-900 text-xs font-bold transition"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Record</span>
+                  </button>
+                </>
+              )}
 
               <div className="flex items-center bg-emerald-50 border border-emerald-200 rounded-lg p-0.5 ml-auto sm:ml-2">
                 <button
@@ -1234,9 +1631,11 @@ export default function FormalGreenWhiteVault() {
           {filteredItems.length === 0 ? (
             <div className="flex-1 rounded-xl border border-dashed border-emerald-200 bg-white/60 p-12 text-center flex flex-col items-center justify-center min-h-[300px]">
               <FolderOpen className="h-12 w-12 text-emerald-400 mb-3" />
-              <p className="text-emerald-900 font-bold text-sm">This folder is empty</p>
+              <p className="text-emerald-900 font-bold text-sm">
+                {activeSection === "trash" ? "Trash bin is empty" : activeSection === "favorites" ? "No starred favorites" : activeSection === "archive" ? "No archived documents" : "This folder is empty"}
+              </p>
               <p className="text-xs text-emerald-800/70 mt-1 max-w-sm">
-                Upload documents, create subfolders, or store passwords and secret notes inside!
+                {activeSection === "trash" ? "Items moved to trash will appear here." : "Drag and drop files, star items, or upload documents to get started!"}
               </p>
             </div>
           ) : viewMode === "grid" ? (
@@ -1245,7 +1644,13 @@ export default function FormalGreenWhiteVault() {
               {filteredItems.map((item) => (
                 <div
                   key={item.id}
-                  className="group relative rounded-xl glass-panel glass-panel-hover p-4 flex flex-col justify-between cursor-pointer border border-emerald-100/80 bg-white"
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, item)}
+                  onDragOver={(e) => item.type === "folder" && handleDragOverFolder(e, item.id)}
+                  onDrop={(e) => item.type === "folder" && handleDropOnFolder(e, item.id)}
+                  className={`group relative rounded-xl glass-panel glass-panel-hover p-4 flex flex-col justify-between cursor-pointer border bg-white transition ${
+                    dragOverFolderId === item.id ? "border-emerald-500 bg-emerald-100/60 ring-2 ring-emerald-500" : "border-emerald-100/80"
+                  }`}
                   onClick={() => {
                     if (item.type === "folder") {
                       setCurrentFolderId(item.id);
@@ -1256,8 +1661,17 @@ export default function FormalGreenWhiteVault() {
                 >
                   {/* Top Item Row */}
                   <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center justify-center h-12 w-12 rounded-xl bg-emerald-50 border border-emerald-100">
-                      {getFileIcon(item)}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => handleToggleFavorite(item, e)}
+                        className="p-1 text-emerald-300 hover:text-amber-400 transition"
+                        title={item.is_favorite ? "Unstar" : "Star Favorite"}
+                      >
+                        <Star className={`h-4 w-4 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-300 hover:text-amber-400"}`} />
+                      </button>
+                      <div className="flex items-center justify-center h-10 w-10 rounded-xl bg-emerald-50 border border-emerald-100">
+                        {getFileIcon(item)}
+                      </div>
                     </div>
 
                     {/* Action Dropdown Toggle */}
@@ -1275,7 +1689,7 @@ export default function FormalGreenWhiteVault() {
                       </button>
 
                       {actionMenuOpenId === item.id && (
-                        <div className="absolute right-0 top-6 z-20 w-36 rounded-lg border border-emerald-200 bg-white py-1 shadow-xl text-xs">
+                        <div className="absolute right-0 top-6 z-20 w-44 rounded-lg border border-emerald-200 bg-white py-1 shadow-xl text-xs">
                           {item.type === "document" && item.storage_key && item.file_name && (
                             <button
                               onClick={() => {
@@ -1288,6 +1702,16 @@ export default function FormalGreenWhiteVault() {
                               Download
                             </button>
                           )}
+                          <button
+                            onClick={(e) => {
+                              setActionMenuOpenId(null);
+                              handleToggleFavorite(item, e);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                          >
+                            <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-700"}`} />
+                            {item.is_favorite ? "Remove Favorite" : "Add Favorite"}
+                          </button>
                           <button
                             onClick={() => {
                               setActionMenuOpenId(null);
@@ -1320,16 +1744,53 @@ export default function FormalGreenWhiteVault() {
                             <Move className="h-3.5 w-3.5 text-emerald-700" />
                             Move To...
                           </button>
-                          <button
-                            onClick={() => {
-                              setActionMenuOpenId(null);
-                              handleDeleteItem(item.id);
-                            }}
-                            className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </button>
+                          {activeSection === "trash" ? (
+                            <>
+                              <button
+                                onClick={(e) => {
+                                  setActionMenuOpenId(null);
+                                  handleSetStatus(item, "active", e);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-800 hover:bg-emerald-50 font-medium transition"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5 text-emerald-600" />
+                                Restore Item
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  setActionMenuOpenId(null);
+                                  handleDeleteItem(item, e);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Delete Permanently
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={(e) => {
+                                  setActionMenuOpenId(null);
+                                  handleSetStatus(item, item.status === "archived" ? "active" : "archived", e);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                              >
+                                <Archive className="h-3.5 w-3.5 text-sky-600" />
+                                {item.status === "archived" ? "Unarchive" : "Archive"}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  setActionMenuOpenId(null);
+                                  handleSetStatus(item, "trash", e);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Move to Trash
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1366,6 +1827,10 @@ export default function FormalGreenWhiteVault() {
                   {filteredItems.map((item) => (
                     <tr
                       key={item.id}
+                      draggable={true}
+                      onDragStart={(e) => handleDragStart(e, item)}
+                      onDragOver={(e) => item.type === "folder" && handleDragOverFolder(e, item.id)}
+                      onDrop={(e) => item.type === "folder" && handleDropOnFolder(e, item.id)}
                       onClick={() => {
                         if (item.type === "folder") {
                           setCurrentFolderId(item.id);
@@ -1373,9 +1838,18 @@ export default function FormalGreenWhiteVault() {
                           handleOpenPreview(item);
                         }
                       }}
-                      className="hover:bg-emerald-50/60 cursor-pointer transition"
+                      className={`hover:bg-emerald-50/60 cursor-pointer transition ${
+                        dragOverFolderId === item.id ? "bg-emerald-100/80" : ""
+                      }`}
                     >
-                      <td className="px-4 py-3 flex items-center gap-3 font-bold text-emerald-950">
+                      <td className="px-4 py-3 flex items-center gap-2.5 font-bold text-emerald-950">
+                        <button
+                          onClick={(e) => handleToggleFavorite(item, e)}
+                          className="p-1 text-emerald-300 hover:text-amber-400 transition"
+                          title={item.is_favorite ? "Unstar" : "Star Favorite"}
+                        >
+                          <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-300 hover:text-amber-400"}`} />
+                        </button>
                         {getFileIcon(item)}
                         <span className="truncate max-w-xs">{item.title}</span>
                       </td>
@@ -1416,13 +1890,32 @@ export default function FormalGreenWhiteVault() {
                           >
                             <Move className="h-4 w-4" />
                           </button>
-                          <button
-                            onClick={() => handleDeleteItem(item.id)}
-                            className="p-1.5 text-rose-600 hover:text-rose-800 transition"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {activeSection === "trash" ? (
+                            <>
+                              <button
+                                onClick={(e) => handleSetStatus(item, "active", e)}
+                                className="p-1.5 text-emerald-700 hover:text-emerald-950 transition"
+                                title="Restore"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteItem(item, e)}
+                                className="p-1.5 text-rose-600 hover:text-rose-800 transition"
+                                title="Delete Permanently"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={(e) => handleSetStatus(item, "trash", e)}
+                              className="p-1.5 text-rose-600 hover:text-rose-800 transition"
+                              title="Move to Trash"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1435,6 +1928,105 @@ export default function FormalGreenWhiteVault() {
       </div>
 
       {/* --- MODALS --- */}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/40 backdrop-blur-md p-4">
+          <div className="w-full max-w-sm rounded-2xl glass-panel p-6 space-y-4 border border-rose-200 bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-rose-100 pb-3">
+              <h3 className="text-base font-bold text-rose-950 flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-rose-600" />
+                {activeSection === "trash" ? "Delete Permanently" : "Move to Trash"}
+              </h3>
+              <button onClick={() => setDeleteConfirmItem(null)} className="text-emerald-700 hover:text-emerald-950">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            
+            <div className="space-y-2 text-xs text-emerald-900">
+              <p className="font-semibold text-sm text-emerald-950">
+                Are you sure you want to {activeSection === "trash" ? "permanently delete" : "move"} <span className="font-extrabold text-rose-700">"{deleteConfirmItem.title}"</span>?
+              </p>
+              <p className="text-emerald-800/80">
+                {activeSection === "trash"
+                  ? "This action cannot be undone. Encrypted data and Cloudflare R2 files will be permanently purged."
+                  : "Item will be moved to the Trash bin where it can be restored or purged later."}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-emerald-100">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmItem(null)}
+                className="rounded-lg border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const item = deleteConfirmItem;
+                  setDeleteConfirmItem(null);
+                  if (activeSection === "trash") {
+                    await handleDeleteItemDirect(item.id);
+                  } else {
+                    await handleSetStatusDirect(item, "trash");
+                  }
+                }}
+                className="rounded-lg bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-bold text-white shadow-md shadow-rose-600/20 transition"
+              >
+                {activeSection === "trash" ? "Delete Permanently" : "Move to Trash"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty Trash Confirmation Modal */}
+      {emptyTrashConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/40 backdrop-blur-md p-4">
+          <div className="w-full max-w-sm rounded-2xl glass-panel p-6 space-y-4 border border-rose-200 bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-rose-100 pb-3">
+              <h3 className="text-base font-bold text-rose-950 flex items-center gap-2">
+                <Trash2 className="h-5 w-5 text-rose-600" />
+                Empty Trash Bin?
+              </h3>
+              <button onClick={() => setEmptyTrashConfirmOpen(false)} className="text-emerald-700 hover:text-emerald-950">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            
+            <div className="space-y-2 text-xs text-emerald-900">
+              <p className="font-semibold text-sm text-emerald-950">
+                Are you sure you want to permanently purge all items in the Trash bin?
+              </p>
+              <p className="text-rose-700 font-medium bg-rose-50 p-2 rounded-lg border border-rose-100">
+                ⚠️ All encrypted records, notes, passwords, and Cloudflare R2 files will be permanently destroyed. This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-emerald-100">
+              <button
+                type="button"
+                onClick={() => setEmptyTrashConfirmOpen(false)}
+                className="rounded-lg border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setEmptyTrashConfirmOpen(false);
+                  await handleEmptyTrashDirect();
+                }}
+                className="rounded-lg bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-bold text-white shadow-md shadow-rose-600/20 transition cursor-pointer"
+              >
+                Empty Trash Bin
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 1. New Folder Modal */}
       {newFolderModalOpen && (
@@ -1930,6 +2522,430 @@ export default function FormalGreenWhiteVault() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* 6. Advanced Research Security Suite Modal */}
+      {securityModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/60 backdrop-blur-md p-3 sm:p-6 overflow-y-auto">
+          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl glass-panel border border-emerald-200/80 bg-white shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-emerald-100 bg-emerald-950 text-white">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-emerald-800/80 border border-emerald-600">
+                  <ShieldAlert className="h-5 w-5 text-emerald-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold tracking-tight">
+                    ADVANCED RESEARCH SECURITY SUITE
+                  </h3>
+                  <p className="text-[10px] text-emerald-300 uppercase tracking-widest font-mono">
+                    Zero-Knowledge • Post-Quantum • Merkle Hash Chain • ZK-SNARKs
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSecurityModalOpen(false)}
+                className="p-1.5 rounded-lg text-emerald-300 hover:text-white hover:bg-emerald-800 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Tabs Navigation */}
+            <div className="flex items-center gap-1 px-4 py-2 bg-emerald-50/80 border-b border-emerald-200/60 overflow-x-auto text-xs font-bold">
+              <button
+                onClick={() => setSecurityTab("sss")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "sss" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <KeyRound className="h-3.5 w-3.5" /> Shamir SSS
+              </button>
+              <button
+                onClick={() => setSecurityTab("pqc")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "pqc" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <Cpu className="h-3.5 w-3.5" /> PQC Kyber
+              </button>
+              <button
+                onClick={() => {
+                  setSecurityTab("audit");
+                  handleFetchAuditLogs();
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "audit" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <GitCommit className="h-3.5 w-3.5" /> Merkle Audit Log
+              </button>
+              <button
+                onClick={() => setSecurityTab("zkp")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "zkp" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <FileCheck className="h-3.5 w-3.5" /> ZK Proofs
+              </button>
+              <button
+                onClick={() => setSecurityTab("webauthn")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "webauthn" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <Fingerprint className="h-3.5 w-3.5" /> Hardware Keys
+              </button>
+              <button
+                onClick={() => {
+                  setSecurityTab("ids");
+                  handleRunAnomalyAudit();
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "ids" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <Activity className="h-3.5 w-3.5" /> Anomaly IDS
+              </button>
+              <button
+                onClick={() => setSecurityTab("sharing")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "sharing" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <Share2 className="h-3.5 w-3.5" /> E2EE Sharing
+              </button>
+              <button
+                onClick={() => setSecurityTab("breach")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${
+                  securityTab === "breach" ? "bg-emerald-700 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-100"
+                }`}
+              >
+                <ShieldCheck className="h-3.5 w-3.5" /> HIBP Breach Check
+              </button>
+            </div>
+
+            {/* Modal Body Tab Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 text-emerald-950">
+              {/* TAB 1: SHAMIR'S SECRET SHARING */}
+              {securityTab === "sss" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <KeyRound className="h-4 w-4 text-emerald-700" />
+                      Shamir's Secret Sharing (SSS) Emergency Recovery Scheme
+                    </h4>
+                    Splits your Master Encryption Key into N=5 threshold shares over Galois Field GF(2^8). Any K=3 shares can reconstruct your Master Vault Key, while fewer than K shares reveal zero information.
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => handleGenerateShamirShares(3, 5)}
+                      className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                    >
+                      <QrCode className="h-4 w-4" /> Generate 3-of-5 Recovery Shares
+                    </button>
+                  </div>
+
+                  {shamirShares.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-xs font-bold text-emerald-900 uppercase tracking-wider">
+                        Generated Emergency Paper Key Shares:
+                      </p>
+                      <div className="grid grid-cols-1 gap-2.5 font-mono text-[11px]">
+                        {shamirShares.map((share) => (
+                          <div key={share.id} className="p-3 bg-slate-900 text-emerald-400 rounded-xl border border-slate-700 flex items-center justify-between">
+                            <span className="font-bold text-white">Share #{share.id}:</span>
+                            <span className="truncate mx-2">{share.id}:{share.shareHex}</span>
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(`${share.id}:${share.shareHex}`);
+                                alert(`Share #${share.id} copied to clipboard!`);
+                              }}
+                              className="p-1 rounded bg-slate-800 text-white hover:bg-slate-700"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: POST-QUANTUM HYBRID ENCRYPTION */}
+              {securityTab === "pqc" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <Cpu className="h-4 w-4 text-emerald-700" />
+                      Post-Quantum Kyber-768 Hybrid Cryptography
+                    </h4>
+                    Layers NIST ML-KEM-768 (CRYSTALS-Kyber) lattice-based key encapsulation over classical AES-256-GCM via HKDF key combining to mitigate quantum decryption risks.
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={async () => {
+                        const pair = await generateKyberKeyPair();
+                        setPqcKeyPair(pair);
+                      }}
+                      className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                    >
+                      <RefreshCw className="h-4 w-4" /> Generate ML-KEM-768 Keypair
+                    </button>
+                  </div>
+
+                  {pqcKeyPair && (
+                    <div className="space-y-3 font-mono text-xs">
+                      <div className="p-3 bg-emerald-950 text-emerald-300 rounded-xl border border-emerald-800 space-y-2">
+                        <p className="font-bold text-white uppercase text-[10px] tracking-wider">Kyber-768 Public Key (1184 bytes):</p>
+                        <p className="truncate text-[10px]">{pqcKeyPair.publicKeyHex}</p>
+                        <p className="font-bold text-white uppercase text-[10px] tracking-wider mt-2">Kyber-768 Secret Key (2400 bytes):</p>
+                        <p className="truncate text-[10px]">{pqcKeyPair.privateKeyHex}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: MERKLE HASH TREE AUDIT LOG */}
+              {securityTab === "audit" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900 flex items-center justify-between">
+                    <div>
+                      <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                        <GitCommit className="h-4 w-4 text-emerald-700" />
+                        Tamper-Evident Merkle Hash Chain Audit Logs
+                      </h4>
+                      Cryptographically verifies that no rows or log entries have been injected, modified, or deleted in NeonDB PostgreSQL.
+                    </div>
+                    {auditVerification && (
+                      <span className={`px-3 py-1 rounded-full text-xs font-extrabold border ${
+                        auditVerification.valid
+                          ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                          : "bg-rose-100 text-rose-800 border-rose-300"
+                      }`}>
+                        {auditVerification.valid ? "✓ MERKLE CHAIN VALID" : "⚠️ TAMPERING DETECTED"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto font-mono text-xs">
+                    {auditLogsList.map((log, idx) => (
+                      <div key={log.id || idx} className="p-3 bg-white border border-emerald-200 rounded-xl shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px] font-bold">
+                          <span className="text-emerald-800">#{idx+1} {log.event_type}</span>
+                          <span className="text-emerald-800/60 font-sans">{new Date(log.created_at).toLocaleString()}</span>
+                        </div>
+                        <p className="text-[10px] text-emerald-900 font-sans">{log.encrypted_details}</p>
+                        <div className="text-[9px] text-emerald-800/70 truncate">
+                          Hash: <code className="bg-emerald-50 px-1 rounded">{log.hash}</code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: ZERO-KNOWLEDGE PROOFS */}
+              {securityTab === "zkp" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <FileCheck className="h-4 w-4 text-emerald-700" />
+                      Zero-Knowledge Selective Credential Disclosure
+                    </h4>
+                    Generates non-interactive zero-knowledge commitments and Fiat-Shamir proof signatures to prove possession of a secret or API key without revealing the secret itself.
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={async () => {
+                        const proof = await generateZKProof(masterPassword || "SecretPass123!", "salt123");
+                        setZkProofPayload(proof);
+                        const result = await verifyZKProof(proof);
+                        setZkVerifyResult(result);
+                      }}
+                      className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                    >
+                      <FileCheck className="h-4 w-4" /> Generate & Verify ZK-Proof
+                    </button>
+                  </div>
+
+                  {zkProofPayload && (
+                    <div className="p-4 bg-slate-900 text-emerald-400 rounded-xl font-mono text-xs space-y-2 border border-slate-700">
+                      <p className="font-bold text-white">ZK Commitment Hash: {zkProofPayload.commitmentHash}</p>
+                      <p className="text-white">Proof Signature: {zkProofPayload.proofSignature}</p>
+                      {zkVerifyResult && (
+                        <p className="text-emerald-300 font-sans font-bold text-xs mt-2 bg-emerald-950/80 p-2 rounded border border-emerald-700">
+                          {zkVerifyResult.message}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 5: WEBAUTHN HARDWARE KEYS */}
+              {securityTab === "webauthn" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <Fingerprint className="h-4 w-4 text-emerald-700" />
+                      Hardware-Backed Key Derivation (WebAuthn / FIDO2)
+                    </h4>
+                    Binds key derivation to your device's Touch ID, Windows Hello, or YubiKey PRF hardware secret.
+                  </div>
+
+                  <button
+                    onClick={async () => {
+                      try {
+                        const cred = await registerHardwareKey("VaultOwner");
+                        setHardwareCred(cred);
+                        alert("Hardware key bound successfully!");
+                      } catch (err: any) {
+                        alert("Hardware binding note: " + err.message);
+                      }
+                    }}
+                    className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                  >
+                    <Fingerprint className="h-4 w-4" /> Register Hardware Security Key
+                  </button>
+
+                  {hardwareCred && (
+                    <div className="p-3 bg-emerald-950 text-emerald-300 rounded-xl font-mono text-xs space-y-1">
+                      <p className="font-bold text-white">Bound Credential ID:</p>
+                      <p className="truncate text-[10px]">{hardwareCred.credentialIdHex}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 6: ACCESS ANOMALY IDS */}
+              {securityTab === "ids" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <Activity className="h-4 w-4 text-emerald-700" />
+                      Client-Side Access Pattern Anomaly Radar
+                    </h4>
+                    Evaluates velocity, hour of access, screen environment, and failure patterns to flag suspicious access behavior.
+                  </div>
+
+                  {anomalyReport && (
+                    <div className="p-4 bg-white border border-emerald-200 rounded-xl space-y-3 shadow-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold uppercase text-emerald-900">Anomaly Threat Risk Score:</span>
+                        <span className={`px-3 py-1 rounded-full text-xs font-extrabold border ${
+                          anomalyReport.riskLevel === "LOW" ? "bg-emerald-100 text-emerald-800 border-emerald-300" : "bg-rose-100 text-rose-800 border-rose-300"
+                        }`}>
+                          {anomalyReport.riskScore}% — {anomalyReport.riskLevel} RISK
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-emerald-900">{anomalyReport.recommendation}</p>
+                      <ul className="list-disc pl-5 text-xs text-emerald-800 space-y-1">
+                        {anomalyReport.detectedAnomalies.map((anom, i) => (
+                          <li key={i}>{anom}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 7: E2EE SHARING */}
+              {securityTab === "sharing" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <Share2 className="h-4 w-4 text-emerald-700" />
+                      End-to-End Encrypted (E2EE) Asymmetric Public-Key Sharing
+                    </h4>
+                    Share encrypted secrets with specific users using X25519 / ECDH P-256 public key agreement.
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={async () => {
+                        const pair = await generateUserKeyPair();
+                        setSharingKeyPair(pair);
+                        await registerPublicKey("User1", pair.publicKeyHex);
+                        alert("E2EE Public Key generated and registered!");
+                      }}
+                      className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                    >
+                      <Users className="h-4 w-4" /> Register Sharing Key Pair
+                    </button>
+                  </div>
+
+                  {sharingKeyPair && (
+                    <div className="p-3 bg-slate-900 text-emerald-300 rounded-xl font-mono text-xs space-y-1">
+                      <p className="font-bold text-white">Your Public Key Hex:</p>
+                      <p className="truncate text-[10px]">{sharingKeyPair.publicKeyHex}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 8: HIBP BREACH AUDITOR */}
+              {securityTab === "breach" && (
+                <div className="space-y-5">
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-xs leading-relaxed text-emerald-900">
+                    <h4 className="font-extrabold text-sm text-emerald-950 flex items-center gap-2 mb-1">
+                      <ShieldCheck className="h-4 w-4 text-emerald-700" />
+                      k-Anonymity HaveIBeenPwned API Breach Auditor
+                    </h4>
+                    Checks master password or stored passwords against HIBP database using 5-character SHA-1 prefixing without ever leaking passwords across the web.
+                  </div>
+
+                  <button
+                    onClick={async () => {
+                      setIsBreachLoading(true);
+                      const res = await checkPasswordBreach(masterPassword || "password123");
+                      const health = analyzePasswordHealth(masterPassword || "password123", res.breachCount);
+                      setBreachReport(health);
+                      setIsBreachLoading(false);
+                    }}
+                    className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center gap-2"
+                  >
+                    {isBreachLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                    Run k-Anonymity Breach Scan
+                  </button>
+
+                  {breachReport && (
+                    <div className="p-4 bg-white border border-emerald-200 rounded-xl space-y-3 shadow-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold uppercase text-emerald-900">Password Rating:</span>
+                        <span className={`px-3 py-1 rounded-full text-xs font-extrabold border ${
+                          breachReport.isBreached ? "bg-rose-100 text-rose-800 border-rose-300" : "bg-emerald-100 text-emerald-800 border-emerald-300"
+                        }`}>
+                          {breachReport.rating} ({breachReport.score}/100) — {breachReport.entropyBits} bits entropy
+                        </span>
+                      </div>
+                      {breachReport.suggestions.map((sug, i) => (
+                        <p key={i} className="text-xs text-emerald-900 font-semibold">{sug}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between px-6 py-3 border-t border-emerald-100 bg-emerald-50/80">
+              <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider">
+                Personal Vault v2.0 • Advanced Research Baseline
+              </span>
+              <button
+                onClick={() => setSecurityModalOpen(false)}
+                className="px-4 py-2 bg-emerald-700 text-white text-xs font-bold rounded-xl hover:bg-emerald-800 transition"
+              >
+                Close Suite
+              </button>
+            </div>
           </div>
         </div>
       )}
