@@ -36,6 +36,9 @@ import {
   Maximize2,
   Minimize2,
   Menu,
+  Sparkles,
+  Box,
+  Layers,
 } from "lucide-react";
 import {
   initDatabase,
@@ -66,6 +69,22 @@ export default function FormalGreenWhiteVault() {
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [unlockError, setUnlockError] = useState("");
+
+  // Theme state: glass, neo, clay
+  type UITheme = "glass" | "neo" | "clay";
+  const [uiTheme, setUiTheme] = useState<UITheme>("glass");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("personal_vault_ui_theme") as UITheme;
+    if (saved && ["glass", "neo", "clay"].includes(saved)) {
+      setUiTheme(saved);
+    }
+  }, []);
+
+  const handleThemeChange = (newTheme: UITheme) => {
+    setUiTheme(newTheme);
+    localStorage.setItem("personal_vault_ui_theme", newTheme);
+  };
 
   // Navigation & View state
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -539,15 +558,15 @@ export default function FormalGreenWhiteVault() {
     return <File className="h-6 w-6 text-emerald-600" />;
   };
 
-  // Lock Overlay Screen (Formal Green & White Theme)
+  // Lock Overlay Screen
   if (isLocked) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-[#f2f7f4] px-4 font-sans text-emerald-950 relative overflow-hidden">
+      <div className={`flex min-h-screen theme-${uiTheme} flex-col items-center justify-center px-4 font-sans text-emerald-950 relative overflow-hidden transition-colors duration-300`}>
         {/* Subtle mint background glows */}
         <div className="absolute top-1/4 left-1/3 -z-10 h-96 w-96 rounded-full bg-emerald-200/40 blur-[130px]"></div>
 
         <div className="w-full max-w-md rounded-2xl glass-panel p-8 shadow-xl border border-emerald-200/80">
-          <div className="mb-8 flex flex-col items-center text-center">
+          <div className="mb-6 flex flex-col items-center text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-800 border border-emerald-300 mb-4 shadow-sm">
               <Lock className="h-8 w-8 animate-pulse text-emerald-800" />
             </div>
@@ -557,6 +576,51 @@ export default function FormalGreenWhiteVault() {
             <p className="mt-2 text-xs font-medium text-emerald-800/80">
               Zero-Knowledge Encrypted Document Storage
             </p>
+          </div>
+
+          {/* Theme Selector Pill on Lock Screen */}
+          <div className="mb-6 flex justify-center">
+            <div className="flex items-center gap-1 bg-black/5 p-1 rounded-xl border border-emerald-200/50">
+              <button
+                type="button"
+                onClick={() => handleThemeChange("glass")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "glass"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/80 hover:text-emerald-950"
+                }`}
+                title="Glassmorphism Theme"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Glass</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleThemeChange("neo")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "neo"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/80 hover:text-emerald-950"
+                }`}
+                title="Neomorphism Theme"
+              >
+                <Box className="h-3.5 w-3.5 text-emerald-700" />
+                <span>Neo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleThemeChange("clay")}
+                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "clay"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/80 hover:text-emerald-950"
+                }`}
+                title="Claymorphism Theme"
+              >
+                <Layers className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Clay</span>
+              </button>
+            </div>
           </div>
 
           <form onSubmit={handleUnlock} className="space-y-6">
@@ -615,9 +679,9 @@ export default function FormalGreenWhiteVault() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f4f8f6] text-emerald-950 flex flex-col font-sans">
+    <div className={`min-h-screen theme-${uiTheme} text-emerald-950 flex flex-col font-sans transition-colors duration-300`}>
       {/* Top Formal Navbar */}
-      <header className="sticky top-0 z-30 border-b border-emerald-100 bg-white/95 backdrop-blur-md shadow-xs">
+      <header className="sticky top-0 z-30 glass-header border-b border-emerald-100 bg-white/95 backdrop-blur-md shadow-xs">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6 py-3 sm:py-3.5">
           <div className="flex items-center gap-2.5 sm:gap-3">
             {/* Mobile Sidebar Hamburger Toggle */}
@@ -646,6 +710,49 @@ export default function FormalGreenWhiteVault() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Theme Selector Widget */}
+            <div className="flex items-center gap-0.5 sm:gap-1 bg-black/5 p-1 rounded-xl border border-emerald-200/60 shadow-2xs">
+              <button
+                type="button"
+                onClick={() => handleThemeChange("glass")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "glass"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/70 hover:text-emerald-950"
+                }`}
+                title="Glassmorphism Theme"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
+                <span className="hidden sm:inline">Glass</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleThemeChange("neo")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "neo"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/70 hover:text-emerald-950"
+                }`}
+                title="Neomorphism Theme"
+              >
+                <Box className="h-3.5 w-3.5 text-emerald-700" />
+                <span className="hidden sm:inline">Neo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleThemeChange("clay")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg transition ${
+                  uiTheme === "clay"
+                    ? "bg-white text-emerald-950 shadow-sm border border-emerald-300 font-extrabold"
+                    : "text-emerald-800/70 hover:text-emerald-950"
+                }`}
+                title="Claymorphism Theme"
+              >
+                <Layers className="h-3.5 w-3.5 text-emerald-600" />
+                <span className="hidden sm:inline">Clay</span>
+              </button>
+            </div>
+
             <button
               onClick={fetchCurrentContents}
               disabled={isPending}
