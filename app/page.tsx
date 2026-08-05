@@ -54,7 +54,17 @@ import {
   Star,
   Archive,
   RotateCcw,
+  PanelLeft,
+  PanelLeftClose,
 } from "lucide-react";
+import { ToastContainer } from "@/components/ToastContainer";
+import { toast } from "@/lib/toast";
+import { CommandPalette } from "@/components/CommandPalette";
+import { CheatsheetModal } from "@/components/CheatsheetModal";
+import { IDEStatusBar } from "@/components/IDEStatusBar";
+import { DeveloperEditor } from "@/components/DeveloperEditor";
+import { GitDiffViewer } from "@/components/GitDiffViewer";
+import { FuturisticSidebar } from "@/components/FuturisticSidebar";
 import {
   initDatabase,
   getVaultItems,
@@ -208,9 +218,80 @@ export default function FormalGreenWhiteVault() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionMenuOpenId, setActionMenuOpenId] = useState<string | null>(null);
 
+  // IDE & Power Feature states
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [splitEditorOpen, setSplitEditorOpen] = useState(false);
+  const [isZenMode, setIsZenMode] = useState(false);
+  const [editorCursorPos, setEditorCursorPos] = useState({ line: 1, col: 1 });
+
   // Confirmation Modals state
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<VaultItem | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+
+  // Global Keyboard Shortcuts Listener
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || "").toLowerCase();
+      const isInputActive = activeTag === "input" || activeTag === "textarea";
+
+      // Cmd/Ctrl + K or Cmd/Ctrl + P -> Command Palette
+      if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "k" || e.key.toLowerCase() === "p")) {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + F -> Global Search / Command Palette Search
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setCommandPaletteOpen(true);
+        return;
+      }
+
+      // Cmd/Ctrl + B -> Toggle Sidebar
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setSidebarCollapsed((prev) => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + \ -> Split Editor
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        setSplitEditorOpen((prev) => !prev);
+        toast.info(splitEditorOpen ? "Split View closed" : "Split View enabled", "IDE Shortcut");
+        return;
+      }
+
+      // Cmd/Ctrl + L -> Quick Lock
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        setIsLocked(true);
+        toast.warning("Vault locked via hotkey", "Security");
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + Z -> Zen Mode
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        setIsZenMode((prev) => !prev);
+        toast.info(!isZenMode ? "Zen Mode Enabled (Distraction-Free)" : "Zen Mode Disabled", "Zen Editor");
+        return;
+      }
+
+      // ? or Cmd/Ctrl + / -> Cheatsheet (when not typing in an input)
+      if ((e.key === "?" && !isInputActive) || ((e.metaKey || e.ctrlKey) && e.key === "/")) {
+        e.preventDefault();
+        setCheatsheetOpen((prev) => !prev);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [sidebarCollapsed, splitEditorOpen, isZenMode]);
 
   // Active View Section: vault, favorites, archive, trash
   type ActiveSection = "vault" | "favorites" | "archive" | "trash";
@@ -979,30 +1060,30 @@ export default function FormalGreenWhiteVault() {
   }
 
   return (
-    <div className={`min-h-screen theme-${uiTheme} text-emerald-950 flex flex-col font-sans transition-colors duration-300`}>
+    <div className={`h-screen w-screen overflow-hidden theme-${uiTheme} text-emerald-950 flex flex-col font-sans transition-colors duration-300`}>
       {/* Top Formal Navbar */}
-      <header className="sticky top-0 z-30 glass-header border-b border-emerald-100 bg-white/95 backdrop-blur-md shadow-xs">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6 py-3 sm:py-3.5">
-          <div className="flex items-center gap-2.5 sm:gap-3">
+      <header className="h-16 shrink-0 z-30 glass-header border-b border-emerald-100 bg-white/95 backdrop-blur-md shadow-xs flex items-center">
+        <div className="mx-auto flex max-w-[1920px] w-full items-center justify-between px-4 sm:px-6">
+          <div className="flex items-center gap-3">
             {/* Mobile Sidebar Hamburger Toggle */}
             <button
               onClick={() => setMobileSidebarOpen(true)}
-              className="lg:hidden p-1.5 rounded-lg border border-emerald-200 text-emerald-800 hover:bg-emerald-50 transition"
+              className="lg:hidden p-2 rounded-xl border border-emerald-200 text-emerald-800 hover:bg-emerald-50 transition"
               title="Open Menu"
             >
               <Menu className="h-5 w-5" />
             </button>
 
-            <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200">
-              <FolderOpen className="h-4 w-4 sm:h-5 sm:w-5" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs">
+              <FolderOpen className="h-5 w-5 text-emerald-700" />
             </div>
             <div>
-              <h1 className="text-base sm:text-lg font-bold tracking-tight text-emerald-950">
+              <h1 className="text-lg sm:text-xl font-extrabold tracking-tight text-emerald-950">
                 PERSONAL VAULT
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
-                <span className="h-2 w-2 rounded-full bg-emerald-600 animate-pulse"></span>
-                <span className="text-[9px] sm:text-[10px] uppercase font-extrabold tracking-wider text-emerald-800">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                <span className="text-xs uppercase font-extrabold tracking-wider text-emerald-800">
                   Zero-Knowledge & PQC Active
                 </span>
               </div>
@@ -1292,202 +1373,23 @@ export default function FormalGreenWhiteVault() {
       )}
 
       {/* Workspace Split Layout */}
-      <div className="flex-1 flex max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-6 gap-6">
-        {/* Left Sidebar Navigation (Desktop) */}
-        <aside className="hidden lg:block w-64 shrink-0 space-y-6">
-          {/* Main Vault Sections */}
-          <div className="rounded-xl glass-panel p-3 space-y-1 border border-emerald-200/80 bg-white/80">
-            <p className="text-[10px] uppercase font-extrabold tracking-wider text-emerald-950/70 px-3 mb-1">
-              Vault Views
-            </p>
-            <button
-              onClick={() => {
-                setActiveSection("vault");
-                setCurrentFolderId(null);
-              }}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                activeSection === "vault" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <FolderOpen className="h-4 w-4 text-emerald-400" />
-              <span>All Vault Items</span>
-            </button>
-            <button
-              onClick={() => setActiveSection("favorites")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                activeSection === "favorites" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <Star className="h-4 w-4 text-amber-400 fill-amber-400" />
-              <span>Starred Favorites</span>
-            </button>
-            <button
-              onClick={() => setActiveSection("archive")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                activeSection === "archive" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <Archive className="h-4 w-4 text-sky-400" />
-              <span>Document Archive</span>
-            </button>
-            <button
-              onClick={() => setActiveSection("trash")}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs font-bold rounded-lg transition ${
-                activeSection === "trash" ? "bg-emerald-800 text-white shadow-xs" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <Trash2 className="h-4 w-4 text-rose-400" />
-              <span>Trash Bin</span>
-            </button>
-          </div>
-
-          <div className="rounded-xl glass-panel p-4 space-y-1.5 border border-emerald-100">
-            <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3 mb-1">
-              File Categories
-            </p>
-            <button
-              onClick={() => setFilterType("all")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "all" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-4 w-4" />
-                <span>All Contents</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.all}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("pdf")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "pdf" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-700" />
-                <span>PDF Documents</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pdf}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("word")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "word" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-600" />
-                <span>Word Files</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.word}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("pptx")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "pptx" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <File className="h-4 w-4 text-emerald-600" />
-                <span>PowerPoint</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.pptx}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("excel")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "excel" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <Grid className="h-4 w-4 text-emerald-600" />
-                <span>Excel Sheets</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.excel}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("image")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "image" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileImage className="h-4 w-4 text-emerald-600" />
-                <span>Images & Photos</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.image}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("code")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "code" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileCode className="h-4 w-4 text-emerald-700" />
-                <span>Code & Scripts</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.code}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("password")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "password" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <Key className="h-4 w-4 text-emerald-700" />
-                <span>Logins & Passwords</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.password}</span>
-            </button>
-            <button
-              onClick={() => setFilterType("note")}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                filterType === "note" ? "bg-emerald-800 text-white shadow-sm" : "text-emerald-900 hover:bg-emerald-50"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-600" />
-                <span>Secure Notes</span>
-              </div>
-              <span className="text-[10px] opacity-80 bg-black/10 px-1.5 py-0.5 rounded">{filterCounts.note}</span>
-            </button>
-          </div>
-
-          {/* Directory Tree */}
-          <div className="rounded-xl glass-panel p-4 space-y-3 border border-emerald-100">
-            <p className="text-[10px] uppercase font-bold tracking-wider text-emerald-900/60 px-3">
-              Folder Navigation
-            </p>
-            <div className="space-y-1">
-              <button
-                onClick={() => setCurrentFolderId(null)}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg transition ${
-                  currentFolderId === null ? "bg-emerald-100 text-emerald-950 font-bold" : "text-emerald-900 hover:bg-emerald-50"
-                }`}
-              >
-                <Home className="h-3.5 w-3.5 text-emerald-700" />
-                Root Vault
-              </button>
-              {allFolders.map((folder) => (
-                <button
-                  key={folder.id}
-                  onClick={() => setCurrentFolderId(folder.id)}
-                  className={`flex w-full items-center gap-2 px-6 py-1.5 text-xs font-bold rounded-lg truncate transition ${
-                    currentFolderId === folder.id ? "bg-emerald-100 text-emerald-950 font-bold" : "text-emerald-800 hover:bg-emerald-50"
-                  }`}
-                >
-                  <Folder className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  <span className="truncate">{folder.title}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </aside>
+      <div className="flex-1 min-h-0 flex max-w-[1920px] mx-auto w-full px-4 sm:px-6 py-4 gap-5 overflow-hidden">
+        {/* Left Sidebar Navigation (Desktop) - Futuristic Glass & Sci-Fi HUD */}
+        <FuturisticSidebar
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
+          activeSection={activeSection}
+          setActiveSection={setActiveSection}
+          filterType={filterType}
+          setFilterType={setFilterType}
+          filterCounts={filterCounts}
+          currentFolderId={currentFolderId}
+          setCurrentFolderId={setCurrentFolderId}
+          allFolders={allFolders}
+        />
 
         {/* Main Explorer Canvas */}
-        <main className="flex-1 flex flex-col space-y-4 min-w-0">
+        <main className="flex-1 flex flex-col space-y-4 min-w-0 h-full overflow-y-auto pr-1">
           {/* Top Explorer Actions Toolbar */}
           <div className="rounded-xl glass-panel p-3 sm:p-4 flex flex-col sm:flex-row gap-3 sm:gap-4 items-stretch sm:items-center justify-between border border-emerald-100">
             {/* Section Header or Breadcrumb Path Bar */}
@@ -1545,9 +1447,9 @@ export default function FormalGreenWhiteVault() {
               {activeSection === "trash" && (
                 <button
                   onClick={handleEmptyTrash}
-                  className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-700 text-white hover:bg-rose-800 text-xs font-bold shadow-xs transition"
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 text-white hover:bg-rose-800 text-xs sm:text-sm font-extrabold shadow-xs transition"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-4 w-4" />
                   <span>Empty Trash Bin</span>
                 </button>
               )}
@@ -1556,9 +1458,9 @@ export default function FormalGreenWhiteVault() {
                 <>
                   <button
                     onClick={() => setNewFolderModalOpen(true)}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs font-bold transition"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 hover:bg-emerald-100 text-xs sm:text-sm font-extrabold transition"
                   >
-                    <FolderPlus className="h-3.5 w-3.5 text-emerald-700" />
+                    <FolderPlus className="h-4 w-4 text-emerald-700" />
                     <span>Folder</span>
                   </button>
 
@@ -1567,9 +1469,9 @@ export default function FormalGreenWhiteVault() {
                       setRecordTab("document");
                       setAddRecordModalOpen(true);
                     }}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 text-xs font-bold shadow-sm shadow-emerald-700/20 transition"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 text-white hover:bg-emerald-800 text-xs sm:text-sm font-extrabold shadow-sm shadow-emerald-700/20 transition"
                   >
-                    <CloudUpload className="h-3.5 w-3.5" />
+                    <CloudUpload className="h-4 w-4" />
                     <span>Upload</span>
                   </button>
 
@@ -1578,32 +1480,32 @@ export default function FormalGreenWhiteVault() {
                       setRecordTab("password");
                       setAddRecordModalOpen(true);
                     }}
-                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950 text-white hover:bg-emerald-900 text-xs font-bold transition"
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-950 text-white hover:bg-emerald-900 text-xs sm:text-sm font-extrabold transition"
                   >
-                    <Plus className="h-3.5 w-3.5" />
+                    <Plus className="h-4 w-4" />
                     <span>Record</span>
                   </button>
                 </>
               )}
 
-              <div className="flex items-center bg-emerald-50 border border-emerald-200 rounded-lg p-0.5 ml-auto sm:ml-2">
+              <div className="flex items-center bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 ml-auto sm:ml-2">
                 <button
                   onClick={() => setViewMode("grid")}
-                  className={`p-1.5 rounded-md transition ${
+                  className={`p-1.5 rounded-lg transition ${
                     viewMode === "grid" ? "bg-white text-emerald-950 shadow-xs" : "text-emerald-700 hover:text-emerald-950"
                   }`}
                   title="Grid View"
                 >
-                  <Grid className="h-3.5 w-3.5" />
+                  <Grid className="h-4 w-4" />
                 </button>
                 <button
                   onClick={() => setViewMode("list")}
-                  className={`p-1.5 rounded-md transition ${
+                  className={`p-1.5 rounded-lg transition ${
                     viewMode === "list" ? "bg-white text-emerald-950 shadow-xs" : "text-emerald-700 hover:text-emerald-950"
                   }`}
                   title="List View"
                 >
-                  <List className="h-3.5 w-3.5" />
+                  <List className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -1611,18 +1513,18 @@ export default function FormalGreenWhiteVault() {
 
           {/* Search bar & info row */}
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-0 items-start sm:items-center justify-between px-1">
-            <p className="text-xs font-medium text-emerald-800">
-              Showing <span className="text-emerald-950 font-bold">{filteredItems.length}</span> items in directory
+            <p className="text-xs sm:text-sm font-bold text-emerald-900">
+              Showing <span className="text-emerald-950 font-black">{filteredItems.length}</span> items in directory
             </p>
 
-            <div className="relative w-full sm:w-64">
-              <Search className="absolute left-3 top-2.5 sm:top-2 h-3.5 w-3.5 text-emerald-600" />
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-3.5 top-2.5 sm:top-2.5 h-4 w-4 text-emerald-600" />
               <input
                 type="text"
                 placeholder="Search items..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-lg border border-emerald-200 bg-white pl-8 pr-3 py-2 sm:py-1.5 text-xs text-emerald-950 placeholder-emerald-800/40 outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                className="w-full rounded-xl border border-emerald-200 bg-white pl-9 pr-3 py-2 text-xs sm:text-sm font-medium text-emerald-950 placeholder-emerald-800/50 outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 shadow-2xs"
               />
             </div>
           </div>
@@ -1639,8 +1541,8 @@ export default function FormalGreenWhiteVault() {
               </p>
             </div>
           ) : viewMode === "grid" ? (
-            /* Grid View Layout */
-            <div className="grid grid-cols-1 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+            /* Grid View Layout - Modern auto-fill minmax grid */
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-4 sm:gap-5">
               {filteredItems.map((item) => (
                 <div
                   key={item.id}
@@ -1798,10 +1700,10 @@ export default function FormalGreenWhiteVault() {
 
                   {/* Title & Metadata */}
                   <div className="space-y-1">
-                    <h3 className="font-bold text-sm text-emerald-950 truncate" title={item.title}>
+                    <h3 className="font-black text-base text-emerald-950 truncate" title={item.title}>
                       {item.title}
                     </h3>
-                    <p className="text-[11px] font-medium text-emerald-800/70 truncate">
+                    <p className="text-xs sm:text-sm font-bold text-emerald-800/90 truncate">
                       {item.type === "folder" && "Folder"}
                       {item.type === "document" && formatBytes(item.file_size)}
                       {item.type === "password" && (item.username || "Password")}
@@ -2350,15 +2252,17 @@ export default function FormalGreenWhiteVault() {
                     <div className="w-full px-4 sm:px-6 py-6 sm:py-8">
                       <audio controls src={previewUrl} className="w-full" />
                     </div>
-                  ) : previewItem.file_name?.match(/\.(txt|json|js|ts|jsx|tsx|py|md|html|css|csv|log)$/i) ? (
+                  ) : previewItem.file_name?.match(/\.(txt|json|js|ts|jsx|tsx|py|md|html|css|csv|log)$/i) || (previewItem as VaultItem).type === "note" ? (
                     isLoadingText ? (
                       <RefreshCw className="h-6 w-6 animate-spin text-emerald-700" />
                     ) : (
-                      <pre className={`w-full overflow-auto text-xs font-mono bg-[#06241b] p-3 sm:p-4 rounded border border-emerald-800 text-emerald-300 whitespace-pre-wrap ${
-                        isPreviewMaximized ? "h-[calc(100vh-180px)] max-h-none" : "max-h-[480px]"
-                      }`}>
-                        {previewTextContent || "No content"}
-                      </pre>
+                      <DeveloperEditor
+                        item={previewItem}
+                        content={previewTextContent || previewItem.notes || "No content"}
+                        vaultItems={items}
+                        onNavigateToItem={(navItem) => handleOpenPreview(navItem)}
+                        readOnly={true}
+                      />
                     )
                   ) : (
                     <div className="text-center space-y-3 p-6">
@@ -2948,6 +2852,63 @@ export default function FormalGreenWhiteVault() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* IDE Floating Toasts */}
+      <ToastContainer />
+
+      {/* Command Palette Overlay */}
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        items={items}
+        onSelectItem={(item) => {
+          if (item.type === "folder") {
+            setCurrentFolderId(item.id);
+          } else {
+            handleOpenPreview(item);
+          }
+        }}
+        onRunAction={(actionId) => {
+          if (actionId === "lock") {
+            setIsLocked(true);
+            toast.warning("Vault locked");
+          } else if (actionId === "zen") {
+            setIsZenMode((prev) => !prev);
+            toast.info("Toggled Zen Mode");
+          } else if (actionId === "theme-glass") {
+            handleThemeChange("glass");
+            toast.success("Glassmorphism Theme Applied");
+          } else if (actionId === "theme-neo") {
+            handleThemeChange("neo");
+            toast.success("Neomorphism Theme Applied");
+          } else if (actionId === "theme-clay") {
+            handleThemeChange("clay");
+            toast.success("Claymorphism Theme Applied");
+          } else if (actionId === "cheatsheet") {
+            setCheatsheetOpen(true);
+          } else if (actionId === "export") {
+            toast.info("Vault metadata ready for export");
+          }
+        }}
+      />
+
+      {/* Keyboard Shortcuts Cheatsheet Modal */}
+      <CheatsheetModal
+        isOpen={cheatsheetOpen}
+        onClose={() => setCheatsheetOpen(false)}
+      />
+
+      {/* IDE Status Bar */}
+      {!isLocked && (
+        <IDEStatusBar
+          text={previewTextContent || previewItem?.notes || searchQuery || ""}
+          cursorPos={editorCursorPos}
+          languageMode={previewItem ? previewItem.type.toUpperCase() : activeSection.toUpperCase()}
+          onOpenCheatsheet={() => setCheatsheetOpen(true)}
+          onToggleZen={() => setIsZenMode((prev) => !prev)}
+          isZenMode={isZenMode}
+        />
       )}
     </div>
   );
