@@ -53,6 +53,9 @@ import {
   renameVaultItem,
   moveVaultItem,
   copyVaultItem,
+  getMasterVerificationToken,
+  setMasterVerificationToken,
+  resetMasterVerificationToken,
   VaultItem,
 } from "@/app/actions/vault";
 import { deriveKey, encryptText, decryptText } from "@/lib/crypto";
@@ -145,24 +148,66 @@ export default function FormalGreenWhiteVault() {
     }
   }, [currentFolderId, isLocked]);
 
-  // Handle Master Password Unlock
+  const VERIFICATION_MAGIC_STRING = "PERSONAL_VAULT_MASTER_VERIFICATION_TOKEN_2026";
+
+  // Handle Master Password Unlock with Strict Verification
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!masterPassword.trim()) {
-      setUnlockError("Please enter a master password.");
+      setUnlockError("Please enter your master password.");
       return;
     }
     setIsUnlocking(true);
     setUnlockError("");
 
     try {
+      // 1. Derive AES-GCM 256-bit Key from Master Password
       const key = await deriveKey(masterPassword);
+
+      // 2. Fetch existing verification token from DB
+      const res = await getMasterVerificationToken();
+
+      if (res.success && res.token) {
+        // Verification token exists — Attempt to decrypt to verify password correctness
+        try {
+          const decrypted = await decryptText(res.token, key);
+          if (decrypted !== VERIFICATION_MAGIC_STRING) {
+            setUnlockError("Incorrect master password. Access denied.");
+            setIsUnlocking(false);
+            return;
+          }
+        } catch (decryptErr) {
+          // AES-GCM tag verification failed (Wrong Password)
+          setUnlockError("Incorrect master password. Access denied.");
+          setIsUnlocking(false);
+          return;
+        }
+      } else {
+        // No verification token in DB yet — Set this password as the vault's Master Password!
+        const encryptedVerification = await encryptText(VERIFICATION_MAGIC_STRING, key);
+        await setMasterVerificationToken(encryptedVerification);
+      }
+
+      // Password verified! Unlock vault
       setCryptoKey(key);
       setIsLocked(false);
     } catch (err: any) {
-      setUnlockError("Failed to derive encryption key.");
+      setUnlockError("Security verification failed: " + (err.message || "Unknown error"));
     } finally {
       setIsUnlocking(false);
+    }
+  };
+
+  // Option to reset vault master password verification
+  const handleResetVaultPassword = async () => {
+    if (confirm("Resetting your Master Password lock will allow setting a new Master Password on next unlock.\n\nAre you sure you want to proceed?")) {
+      const res = await resetMasterVerificationToken();
+      if (res.success) {
+        alert("Master password verification reset successfully. Enter your new Master Password to lock the vault with it.");
+        setUnlockError("");
+      } else {
+        alert("Reset failed: " + res.error);
+      }
     }
   };
 
@@ -544,7 +589,7 @@ export default function FormalGreenWhiteVault() {
               {isUnlocking ? (
                 <>
                   <RefreshCw className="h-4 w-4 animate-spin" />
-                  Deriving Security Key...
+                  Verifying Security Key...
                 </>
               ) : (
                 <>
@@ -554,6 +599,16 @@ export default function FormalGreenWhiteVault() {
               )}
             </button>
           </form>
+
+          <div className="mt-6 text-center">
+            <button
+              type="button"
+              onClick={handleResetVaultPassword}
+              className="text-[11px] font-semibold text-emerald-800/60 hover:text-emerald-950 hover:underline transition"
+            >
+              Forgotten or want to change password? Reset Master Password
+            </button>
+          </div>
         </div>
       </div>
     );

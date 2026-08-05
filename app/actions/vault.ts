@@ -73,14 +73,14 @@ export async function getVaultItems(parentId: string | null = null) {
       items = await sql`
         SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, created_at, updated_at
         FROM vault_items
-        WHERE parent_id IS NULL
+        WHERE parent_id IS NULL AND type != 'vault_verification'
         ORDER BY type = 'folder' DESC, created_at DESC
       `;
     } else {
       items = await sql`
         SELECT id, title, type, username, secret, url, notes, file_name, file_type, file_size, storage_key, parent_id, created_at, updated_at
         FROM vault_items
-        WHERE parent_id = ${parentId}
+        WHERE parent_id = ${parentId} AND type != 'vault_verification'
         ORDER BY type = 'folder' DESC, created_at DESC
       `;
     }
@@ -636,3 +636,56 @@ export async function copyVaultItem(id: string, targetParentId: string | null) {
     return { success: false, error: error.message };
   }
 }
+
+/**
+ * Fetches the master password verification token from the database if one exists.
+ */
+export async function getMasterVerificationToken() {
+  try {
+    const items = await sql`
+      SELECT secret FROM vault_items WHERE type = 'vault_verification' LIMIT 1
+    `;
+    if (items.length > 0 && (items[0] as any).secret) {
+      return { success: true, token: (items[0] as any).secret as string };
+    }
+    return { success: true, token: null };
+  } catch (error: any) {
+    console.error("Failed to fetch master verification token:", error);
+    return { success: false, error: error.message, token: null };
+  }
+}
+
+/**
+ * Saves a new encrypted master password verification token.
+ */
+export async function setMasterVerificationToken(encryptedToken: string) {
+  try {
+    await sql`
+      DELETE FROM vault_items WHERE type = 'vault_verification'
+    `;
+    await sql`
+      INSERT INTO vault_items (title, type, secret)
+      VALUES ('MASTER_VERIFICATION_TOKEN', 'vault_verification', ${encryptedToken})
+    `;
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to set master verification token:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Resets the master password verification token (used for vault reset or password changes).
+ */
+export async function resetMasterVerificationToken() {
+  try {
+    await sql`
+      DELETE FROM vault_items WHERE type = 'vault_verification'
+    `;
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to reset master verification token:", error);
+    return { success: false, error: error.message };
+  }
+}
+
