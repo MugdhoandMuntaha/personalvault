@@ -214,7 +214,9 @@ export default function FormalGreenWhiteVault() {
   const [noteContent, setNoteContent] = useState("");
   const [notes, setNotes] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadStatusText, setUploadStatusText] = useState<string>("");
   const [isAdding, setIsAdding] = useState(false);
 
   // Decrypted cache & Feedback
@@ -627,93 +629,111 @@ export default function FormalGreenWhiteVault() {
     }
   };
 
-  // Add Document Upload: <= 4.2MB uses Server Action (no CORS needed), > 4.2MB uses Presigned R2 PUT URL
+  // Add Document Upload: Supports single or multiple file batch uploads (files <= 4.2MB via direct action, > 4.2MB via presigned URL)
   const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedFile) return alert("Please select a document.");
+    const filesToUpload = selectedFiles.length > 0 ? selectedFiles : (selectedFile ? [selectedFile] : []);
+    if (filesToUpload.length === 0) return alert("Please select at least one document to upload.");
 
     setIsAdding(true);
     setUploadProgress(0);
+    setUploadStatusText("");
+
+    const VERCEL_MAX_DIRECT_SIZE = 4.2 * 1024 * 1024; // 4.2 MB safe threshold for Vercel
+    let successCount = 0;
 
     try {
-      const fileType = selectedFile.type || "application/octet-stream";
-      const fileTitle = title.trim() || selectedFile.name;
-      const VERCEL_MAX_DIRECT_SIZE = 4.2 * 1024 * 1024; // 4.2 MB safe threshold for Vercel
+      for (let i = 0; i < filesToUpload.length; i++) {
+        const file = filesToUpload[i];
+        const fileType = file.type || "application/octet-stream";
+        // If single file selected, custom title can override. If multiple, file name is used.
+        const fileTitle = filesToUpload.length === 1 && title.trim() ? title.trim() : file.name;
+        
+        setUploadStatusText(`Uploading ${i + 1} of ${filesToUpload.length}: ${file.name}`);
+        const baseProgress = Math.round((i / filesToUpload.length) * 100);
+        setUploadProgress(baseProgress);
 
-      if (selectedFile.size <= VERCEL_MAX_DIRECT_SIZE) {
-        // Files <= 4.2 MB: Direct Server Action upload (No CORS required, supports 1 byte to 4.2 MB!)
-        setUploadProgress(50);
-        const formData = new FormData();
-        formData.append("file", selectedFile);
-        if (title) formData.append("title", title);
-        if (notes) formData.append("notes", notes);
-        if (currentFolderId) formData.append("parentId", currentFolderId);
+        if (file.size <= VERCEL_MAX_DIRECT_SIZE) {
+          // Direct server action for files <= 4.2 MB
+          const formData = new FormData();
+          formData.append("file", file);
+          if (fileTitle) formData.append("title", fileTitle);
+          if (notes) formData.append("notes", notes);
+          if (currentFolderId) formData.append("parentId", currentFolderId);
 
-        const res = await uploadDocumentDirect(formData);
-        if (!res.success) {
-          throw new Error(res.error || "Upload failed.");
+          const res = await uploadDocumentDirect(formData);
+          if (!res.success) {
+            throw new Error(`Failed to upload ${file.name}: ${res.error || "Upload failed."}`);
+          }
+        } else {
+          // Presigned R2 URL for files > 4.2 MB
+          const presignedRes = await getPresignedUploadUrl(file.name, fileType);
+          if (!presignedRes.success || !presignedRes.uploadUrl || !presignedRes.storageKey) {
+            throw new Error(presignedRes.error || `Failed to generate upload URL for ${file.name}.`);
+          }
+
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("PUT", presignedRes.uploadUrl, true);
+            xhr.setRequestHeader("Content-Type", fileType);
+
+            xhr.upload.onprogress = (event) => {
+              if (event.lengthComputable) {
+                const itemPercent = event.loaded / event.total;
+                const totalPercent = Math.round(((i + itemPercent) / filesToUpload.length) * 100);
+                setUploadProgress(totalPercent);
+              }
+            };
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+              } else {
+                reject(new Error(`Storage upload failed for ${file.name} (HTTP ${xhr.status}). Check Cloudflare R2 CORS settings.`));
+              }
+            };
+
+            xhr.onerror = () => reject(new Error(`CORS policy blocked upload for ${file.name}. Please ensure CORS rules are enabled in your Cloudflare R2 bucket.`));
+            xhr.ontimeout = () => reject(new Error(`Upload request timed out for ${file.name}.`));
+
+            xhr.send(file);
+          });
+
+          const metaRes = await addDocumentMetadata({
+            title: fileTitle,
+            fileName: file.name,
+            fileType: fileType,
+            fileSize: file.size,
+            storageKey: presignedRes.storageKey,
+            notes: notes || undefined,
+            parentId: currentFolderId,
+          });
+
+          if (!metaRes.success) {
+            throw new Error(metaRes.error || `Failed to save metadata for ${file.name}.`);
+          }
         }
-        setUploadProgress(100);
-      } else {
-        // Files > 4.2 MB (e.g. 15 MB, 50 MB, 100 MB+): Presigned Direct PUT to Cloudflare R2
-        setUploadProgress(10);
-        const presignedRes = await getPresignedUploadUrl(selectedFile.name, fileType);
-        if (!presignedRes.success || !presignedRes.uploadUrl || !presignedRes.storageKey) {
-          throw new Error(presignedRes.error || "Failed to generate upload URL.");
-        }
 
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("PUT", presignedRes.uploadUrl, true);
-          xhr.setRequestHeader("Content-Type", fileType);
-
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              const percentComplete = Math.round((event.loaded / event.total) * 100);
-              setUploadProgress(percentComplete);
-            }
-          };
-
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve();
-            } else {
-              reject(new Error(`Storage upload failed with HTTP status ${xhr.status}. Check Cloudflare R2 CORS settings.`));
-            }
-          };
-
-          xhr.onerror = () => reject(new Error("CORS policy blocked direct upload to Cloudflare R2. Please add CORS rule to your R2 bucket in Cloudflare Dashboard."));
-          xhr.ontimeout = () => reject(new Error("Upload request timed out."));
-
-          xhr.send(selectedFile);
-        });
-
-        const metaRes = await addDocumentMetadata({
-          title: fileTitle,
-          fileName: selectedFile.name,
-          fileType: fileType,
-          fileSize: selectedFile.size,
-          storageKey: presignedRes.storageKey,
-          notes: notes || undefined,
-          parentId: currentFolderId,
-        });
-
-        if (!metaRes.success) {
-          throw new Error(metaRes.error || "Failed to save document metadata.");
-        }
+        successCount++;
+        setUploadProgress(Math.round(((i + 1) / filesToUpload.length) * 100));
       }
 
-      toast.success("Document uploaded successfully!", "Vault");
+      toast.success(`${successCount} document${successCount > 1 ? "s" : ""} uploaded successfully!`, "Vault");
       setTitle("");
       setSelectedFile(null);
+      setSelectedFiles([]);
       setNotes("");
       setAddRecordModalOpen(false);
       fetchCurrentContents();
     } catch (err: any) {
-      console.error("Upload failed:", err);
+      console.error("Multi-upload failed:", err);
       alert("Upload error: " + (err.message || "Unexpected error during upload"));
+      if (successCount > 0) {
+        fetchCurrentContents();
+      }
     } finally {
       setUploadProgress(null);
+      setUploadStatusText("");
       setIsAdding(false);
     }
   };
@@ -2080,29 +2100,66 @@ export default function FormalGreenWhiteVault() {
 
             {recordTab === "document" ? (
               <form onSubmit={handleAddDocument} className="space-y-4">
+                {selectedFiles.length <= 1 && (
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Title (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder={selectedFile ? selectedFile.name : "e.g. Tax Statement 2026"}
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950 outline-none focus:border-emerald-600"
+                    />
+                  </div>
+                )}
                 <div>
-                  <label className="block text-xs font-bold text-emerald-900 mb-1">Title (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder={selectedFile ? selectedFile.name : "e.g. Tax Statement 2026"}
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950 outline-none focus:border-emerald-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-emerald-900 mb-1">Select File</label>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-xs font-bold text-emerald-900">
+                      Select Files {selectedFiles.length > 0 && `(${selectedFiles.length})`}
+                    </label>
+                    {selectedFiles.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { setSelectedFiles([]); setSelectedFile(null); }}
+                        className="text-[11px] font-semibold text-rose-600 hover:text-rose-800"
+                      >
+                        Clear All
+                      </button>
+                    )}
+                  </div>
                   <input
                     type="file"
-                    required
-                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                    className="w-full rounded-lg border border-emerald-200 bg-white p-2 text-xs text-emerald-900 font-medium"
+                    multiple
+                    required={selectedFiles.length === 0}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      setSelectedFiles(files);
+                      setSelectedFile(files[0] || null);
+                    }}
+                    className="w-full rounded-lg border border-emerald-200 bg-white p-2 text-xs text-emerald-900 font-medium cursor-pointer file:mr-3 file:py-1 file:px-2.5 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-emerald-100 file:text-emerald-800 hover:file:bg-emerald-200 transition"
                   />
                 </div>
+
+                {/* Selected Files Preview List */}
+                {selectedFiles.length > 0 && (
+                  <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 bg-emerald-50/70 border border-emerald-200/80 rounded-lg">
+                    {selectedFiles.map((file, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-xs bg-white p-1.5 rounded border border-emerald-100">
+                        <span className="truncate max-w-[220px] font-medium text-emerald-950" title={file.name}>
+                          {file.name}
+                        </span>
+                        <span className="text-[10px] text-emerald-700 font-semibold">
+                          {(file.size / (1024 * 1024)).toFixed(2)} MB
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {uploadProgress !== null && (
                   <div className="space-y-1.5 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200">
                     <div className="flex justify-between text-xs font-bold text-emerald-900">
-                      <span>Uploading to Cloudflare R2...</span>
+                      <span className="truncate max-w-[240px]">{uploadStatusText || "Uploading files..."}</span>
                       <span>{uploadProgress}%</span>
                     </div>
                     <div className="w-full bg-emerald-200/60 rounded-full h-2 overflow-hidden">
@@ -2115,10 +2172,14 @@ export default function FormalGreenWhiteVault() {
                 )}
                 <button
                   type="submit"
-                  disabled={isAdding || !selectedFile}
-                  className="w-full py-2.5 rounded-lg bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 transition shadow-sm"
+                  disabled={isAdding || (selectedFiles.length === 0 && !selectedFile)}
+                  className="w-full py-2.5 rounded-lg bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 transition shadow-sm disabled:opacity-50"
                 >
-                  Upload File
+                  {isAdding
+                    ? "Uploading..."
+                    : selectedFiles.length > 1
+                    ? `Upload ${selectedFiles.length} Files`
+                    : "Upload File"}
                 </button>
               </form>
             ) : (
