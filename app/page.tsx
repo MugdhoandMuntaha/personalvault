@@ -623,34 +623,75 @@ export default function FormalGreenWhiteVault() {
     }
   };
 
-  // Add Document Upload via Server Action (Bypasses CORS)
+  // Add Document Upload via Presigned URL (Direct to R2, supports large files 15MB+)
   const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) return alert("Please select a document.");
 
     setIsAdding(true);
-    setUploadProgress(50);
+    setUploadProgress(0);
 
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      if (title) formData.append("title", title);
-      if (notes) formData.append("notes", notes);
-      if (currentFolderId) formData.append("parentId", currentFolderId);
+      const fileType = selectedFile.type || "application/octet-stream";
+      const fileTitle = title.trim() || selectedFile.name;
 
-      const res = await uploadDocumentDirect(formData);
+      // 1. Get presigned upload URL from R2
+      const presignedRes = await getPresignedUploadUrl(selectedFile.name, fileType);
+      if (!presignedRes.success || !presignedRes.uploadUrl || !presignedRes.storageKey) {
+        throw new Error(presignedRes.error || "Failed to generate upload URL");
+      }
 
-      if (res.success) {
+      // 2. Upload file directly from browser to Cloudflare R2 using XMLHttpRequest to show progress
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", presignedRes.uploadUrl, true);
+        xhr.setRequestHeader("Content-Type", fileType);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percentComplete);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Storage upload failed (HTTP ${xhr.status})`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Network error during file upload to storage."));
+        xhr.ontimeout = () => reject(new Error("Upload request timed out."));
+
+        xhr.send(selectedFile);
+      });
+
+      // 3. Save metadata to Neon DB
+      const metaRes = await addDocumentMetadata({
+        title: fileTitle,
+        fileName: selectedFile.name,
+        fileType: fileType,
+        fileSize: selectedFile.size,
+        storageKey: presignedRes.storageKey,
+        notes: notes || undefined,
+        parentId: currentFolderId,
+      });
+
+      if (metaRes.success) {
+        toast.success("Document uploaded successfully!", "Vault");
         setTitle("");
         setSelectedFile(null);
         setNotes("");
         setAddRecordModalOpen(false);
         fetchCurrentContents();
       } else {
-        alert("Upload error: " + res.error);
+        alert("Failed to save file record: " + metaRes.error);
       }
     } catch (err: any) {
-      alert("Error uploading file: " + err.message);
+      console.error("Upload failed:", err);
+      alert("Upload error: " + (err.message || "Unexpected error during upload"));
     } finally {
       setUploadProgress(null);
       setIsAdding(false);
@@ -2039,7 +2080,18 @@ export default function FormalGreenWhiteVault() {
                   />
                 </div>
                 {uploadProgress !== null && (
-                  <p className="text-xs text-emerald-700 font-bold">Uploading: {uploadProgress}%</p>
+                  <div className="space-y-1.5 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200">
+                    <div className="flex justify-between text-xs font-bold text-emerald-900">
+                      <span>Uploading to Cloudflare R2...</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <div className="w-full bg-emerald-200/60 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="bg-emerald-600 h-2 rounded-full transition-all duration-150"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                  </div>
                 )}
                 <button
                   type="submit"

@@ -1,4 +1,36 @@
-const { neon } = require('@neondatabase/serverless');
+const { neon, neonConfig } = require('@neondatabase/serverless');
+const https = require('https');
+
+neonConfig.fetchFunction = (url, options = {}) => {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.request(
+      u,
+      {
+        method: options.method || "POST",
+        headers: options.headers,
+        family: 4,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: res.statusCode,
+            statusText: res.statusMessage,
+            text: async () => data,
+            json: async () => JSON.parse(data),
+            headers: new Map(Object.entries(res.headers)),
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+};
 
 const databaseUrl = "postgresql://neondb_owner:npg_sAhI9BM7kunT@ep-summer-breeze-ax4u6fvb.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require";
 

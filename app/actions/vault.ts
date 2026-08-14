@@ -272,12 +272,13 @@ export async function uploadDocumentDirect(formData: FormData) {
 /**
  * Generates a presigned URL to upload a document directly to Cloudflare R2 from the client browser.
  */
-export async function getPresignedUploadUrl(fileName: string, fileType: string) {
+export async function getPresignedUploadUrl(fileName: string, fileType?: string) {
   try {
-    if (!fileName || !fileType) {
-      return { success: false, error: "File name and file type are required." };
+    if (!fileName) {
+      return { success: false, error: "File name is required." };
     }
 
+    const type = fileType && fileType.trim() ? fileType : "application/octet-stream";
     const fileId = crypto.randomUUID();
     const sanitizedName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
     const storageKey = `vault-docs/${fileId}-${sanitizedName}`;
@@ -285,7 +286,7 @@ export async function getPresignedUploadUrl(fileName: string, fileType: string) 
     const command = new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: storageKey,
-      ContentType: fileType,
+      ContentType: type,
     });
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 900 });
