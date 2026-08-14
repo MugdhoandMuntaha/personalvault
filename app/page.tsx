@@ -218,6 +218,7 @@ export default function FormalGreenWhiteVault() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadStatusText, setUploadStatusText] = useState<string>("");
   const [isAdding, setIsAdding] = useState(false);
+  const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({});
 
   // Decrypted cache & Feedback
   const [decryptedCache, setDecryptedCache] = useState<Record<string, string>>({});
@@ -347,6 +348,38 @@ export default function FormalGreenWhiteVault() {
       fetchCurrentContents();
     }
   }, [currentFolderId, activeSection, isLocked]);
+
+  const isImageFile = (fileName?: string | null) => {
+    if (!fileName) return false;
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    return ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
+  };
+
+  // Load presigned image thumbnail preview URLs for image documents
+  useEffect(() => {
+    if (!items || items.length === 0) return;
+    const imageItems = items.filter(
+      (item) =>
+        item.type === "document" &&
+        item.storage_key &&
+        item.file_name &&
+        isImageFile(item.file_name) &&
+        !imagePreviews[item.id]
+    );
+
+    if (imageItems.length === 0) return;
+
+    imageItems.forEach(async (item) => {
+      try {
+        const res = await getPresignedViewUrl(item.storage_key!, item.file_name!);
+        if (res.success && res.viewUrl) {
+          setImagePreviews((prev) => ({ ...prev, [item.id]: res.viewUrl! }));
+        }
+      } catch (e) {
+        console.warn("Failed to load thumbnail preview for:", item.title, e);
+      }
+    });
+  }, [items]);
 
   // Action Handlers for Favorites, Archive, Trash, & Drag-and-Drop
   const handleToggleFavorite = async (item: VaultItem, e?: React.MouseEvent) => {
@@ -1642,142 +1675,177 @@ export default function FormalGreenWhiteVault() {
                     }
                   }}
                 >
-                  {/* Top Item Row */}
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={(e) => handleToggleFavorite(item, e)}
-                        className="p-1 text-emerald-300 hover:text-amber-400 transition"
-                        title={item.is_favorite ? "Unstar" : "Star Favorite"}
-                      >
-                        <Star className={`h-4 w-4 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-300 hover:text-amber-400"}`} />
-                      </button>
-                      <div className="flex items-center justify-center h-10 w-10 rounded-xl bg-emerald-50 border border-emerald-100">
-                        {getFileIcon(item)}
+                  {/* Top Item Row or Image Thumbnail Preview */}
+                  {item.type === "document" && isImageFile(item.file_name) && imagePreviews[item.id] ? (
+                    <div className="relative w-full h-36 mb-3 rounded-lg overflow-hidden border border-emerald-200/70 bg-emerald-950/5 group/img shadow-2xs">
+                      <img
+                        src={imagePreviews[item.id]}
+                        alt={item.title}
+                        className="w-full h-full object-cover group-hover/img:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                      <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-950/75 backdrop-blur-xs text-[10px] font-bold text-white uppercase tracking-wider">
+                          {item.file_name?.split(".").pop()?.toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="absolute top-2 right-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={(e) => handleToggleFavorite(item, e)}
+                          className="p-1.5 rounded-full bg-emerald-950/60 backdrop-blur-xs text-white hover:text-amber-400 transition"
+                          title={item.is_favorite ? "Unstar" : "Star Favorite"}
+                        >
+                          <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-400" : "text-white"}`} />
+                        </button>
+                        <button
+                          onClick={() => setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id)}
+                          className="p-1.5 rounded-full bg-emerald-950/60 backdrop-blur-xs text-white hover:bg-emerald-900 transition"
+                        >
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </div>
+                  ) : (
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => handleToggleFavorite(item, e)}
+                          className="p-1 text-emerald-300 hover:text-amber-400 transition"
+                          title={item.is_favorite ? "Unstar" : "Star Favorite"}
+                        >
+                          <Star className={`h-4 w-4 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-300 hover:text-amber-400"}`} />
+                        </button>
+                        <div className="flex items-center justify-center h-10 w-10 rounded-xl bg-emerald-50 border border-emerald-100">
+                          {getFileIcon(item)}
+                        </div>
+                      </div>
 
-                    {/* Action Dropdown Toggle */}
+                      {/* Action Dropdown Toggle */}
+                      <div
+                        className="relative"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={() =>
+                            setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id)
+                          }
+                          className="p-1 text-emerald-700 hover:text-emerald-950 rounded-md hover:bg-emerald-50 transition"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Dropdown Menu Container */}
+                  {actionMenuOpenId === item.id && (
                     <div
-                      className="relative"
+                      className="absolute right-3 top-10 z-20 w-44 rounded-lg border border-emerald-200 bg-white py-1 shadow-xl text-xs"
                       onClick={(e) => e.stopPropagation()}
                     >
+                      {item.type === "document" && item.storage_key && item.file_name && (
+                        <button
+                          onClick={() => {
+                            setActionMenuOpenId(null);
+                            handleDownload(item.storage_key!, item.file_name!);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                        >
+                          <Download className="h-3.5 w-3.5 text-emerald-700" />
+                          Download
+                        </button>
+                      )}
                       <button
-                        onClick={() =>
-                          setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id)
-                        }
-                        className="p-1 text-emerald-700 hover:text-emerald-950 rounded-md hover:bg-emerald-50 transition"
+                        onClick={(e) => {
+                          setActionMenuOpenId(null);
+                          handleToggleFavorite(item, e);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
                       >
-                        <MoreVertical className="h-4 w-4" />
+                        <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-700"}`} />
+                        {item.is_favorite ? "Remove Favorite" : "Add Favorite"}
                       </button>
-
-                      {actionMenuOpenId === item.id && (
-                        <div className="absolute right-0 top-6 z-20 w-44 rounded-lg border border-emerald-200 bg-white py-1 shadow-xl text-xs">
-                          {item.type === "document" && item.storage_key && item.file_name && (
-                            <button
-                              onClick={() => {
-                                setActionMenuOpenId(null);
-                                handleDownload(item.storage_key!, item.file_name!);
-                              }}
-                              className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
-                            >
-                              <Download className="h-3.5 w-3.5 text-emerald-700" />
-                              Download
-                            </button>
-                          )}
+                      <button
+                        onClick={() => {
+                          setActionMenuOpenId(null);
+                          setRenameItem(item);
+                          setRenameTitle(item.title);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                      >
+                        <Edit3 className="h-3.5 w-3.5 text-emerald-700" />
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionMenuOpenId(null);
+                          handleCopyItem(item);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                      >
+                        <Copy className="h-3.5 w-3.5 text-emerald-700" />
+                        Duplicate
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionMenuOpenId(null);
+                          setMoveItem(item);
+                          setMoveTargetFolderId(currentFolderId);
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                      >
+                        <Move className="h-3.5 w-3.5 text-emerald-700" />
+                        Move To...
+                      </button>
+                      {activeSection === "trash" ? (
+                        <>
                           <button
                             onClick={(e) => {
                               setActionMenuOpenId(null);
-                              handleToggleFavorite(item, e);
+                              handleSetStatus(item, "active", e);
                             }}
-                            className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-800 hover:bg-emerald-50 font-medium transition"
                           >
-                            <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-700"}`} />
-                            {item.is_favorite ? "Remove Favorite" : "Add Favorite"}
+                            <RotateCcw className="h-3.5 w-3.5 text-emerald-600" />
+                            Restore Item
                           </button>
                           <button
-                            onClick={() => {
+                            onClick={(e) => {
                               setActionMenuOpenId(null);
-                              setRenameItem(item);
-                              setRenameTitle(item.title);
+                              handleDeleteItem(item, e);
+                            }}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete Permanently
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={(e) => {
+                              setActionMenuOpenId(null);
+                              handleSetStatus(item, item.status === "archived" ? "active" : "archived", e);
                             }}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
                           >
-                            <Edit3 className="h-3.5 w-3.5 text-emerald-700" />
-                            Rename
+                            <Archive className="h-3.5 w-3.5 text-sky-600" />
+                            {item.status === "archived" ? "Unarchive" : "Archive"}
                           </button>
                           <button
-                            onClick={() => {
+                            onClick={(e) => {
                               setActionMenuOpenId(null);
-                              handleCopyItem(item);
+                              handleSetStatus(item, "trash", e);
                             }}
-                            className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
                           >
-                            <Copy className="h-3.5 w-3.5 text-emerald-700" />
-                            Duplicate
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Move to Trash
                           </button>
-                          <button
-                            onClick={() => {
-                              setActionMenuOpenId(null);
-                              setMoveItem(item);
-                              setMoveTargetFolderId(currentFolderId);
-                            }}
-                            className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
-                          >
-                            <Move className="h-3.5 w-3.5 text-emerald-700" />
-                            Move To...
-                          </button>
-                          {activeSection === "trash" ? (
-                            <>
-                              <button
-                                onClick={(e) => {
-                                  setActionMenuOpenId(null);
-                                  handleSetStatus(item, "active", e);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-800 hover:bg-emerald-50 font-medium transition"
-                              >
-                                <RotateCcw className="h-3.5 w-3.5 text-emerald-600" />
-                                Restore Item
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  setActionMenuOpenId(null);
-                                  handleDeleteItem(item, e);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                Delete Permanently
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={(e) => {
-                                  setActionMenuOpenId(null);
-                                  handleSetStatus(item, item.status === "archived" ? "active" : "archived", e);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-emerald-900 hover:bg-emerald-100 font-medium transition"
-                              >
-                                <Archive className="h-3.5 w-3.5 text-sky-600" />
-                                {item.status === "archived" ? "Unarchive" : "Archive"}
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  setActionMenuOpenId(null);
-                                  handleSetStatus(item, "trash", e);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-1.5 text-rose-700 hover:bg-rose-50 font-medium transition"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                Move to Trash
-                              </button>
-                            </>
-                          )}
-                        </div>
+                        </>
                       )}
                     </div>
-                  </div>
+                  )}
 
                   {/* Title & Metadata */}
                   <div className="space-y-1">
@@ -1833,7 +1901,16 @@ export default function FormalGreenWhiteVault() {
                         >
                           <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-500" : "text-emerald-300 hover:text-amber-400"}`} />
                         </button>
-                        {getFileIcon(item)}
+                        {item.type === "document" && isImageFile(item.file_name) && imagePreviews[item.id] ? (
+                          <img
+                            src={imagePreviews[item.id]}
+                            alt={item.title}
+                            className="h-8 w-8 object-cover rounded border border-emerald-200 shadow-2xs"
+                            loading="lazy"
+                          />
+                        ) : (
+                          getFileIcon(item)
+                        )}
                         <span className="truncate max-w-xs">{item.title}</span>
                       </td>
                       <td className="px-4 py-3 text-emerald-800 uppercase text-[10px] font-bold">
