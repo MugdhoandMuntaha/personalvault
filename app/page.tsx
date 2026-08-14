@@ -627,7 +627,7 @@ export default function FormalGreenWhiteVault() {
     }
   };
 
-  // Add Document Upload via Direct / Chunked Server Actions (No CORS rules needed, supports files 15MB+)
+  // Add Document Upload: <= 4.2MB uses Server Action (no CORS needed), > 4.2MB uses Presigned R2 PUT URL
   const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) return alert("Please select a document.");
@@ -638,10 +638,10 @@ export default function FormalGreenWhiteVault() {
     try {
       const fileType = selectedFile.type || "application/octet-stream";
       const fileTitle = title.trim() || selectedFile.name;
-      const CHUNK_SIZE = 3 * 1024 * 1024; // 3 MB per chunk (well below Vercel 4.5MB limit)
+      const VERCEL_MAX_DIRECT_SIZE = 4.2 * 1024 * 1024; // 4.2 MB safe threshold for Vercel
 
-      if (selectedFile.size <= CHUNK_SIZE) {
-        // Direct single-pass upload for small files
+      if (selectedFile.size <= VERCEL_MAX_DIRECT_SIZE) {
+        // Files <= 4.2 MB: Direct Server Action upload (No CORS required, supports 1 byte to 4.2 MB!)
         setUploadProgress(50);
         const formData = new FormData();
         formData.append("file", selectedFile);
@@ -655,57 +655,51 @@ export default function FormalGreenWhiteVault() {
         }
         setUploadProgress(100);
       } else {
-        // Chunked multipart upload for large files (> 3 MB)
-        const startRes = await startChunkedUpload(selectedFile.name, fileType);
-        if (!startRes.success || !startRes.uploadId || !startRes.storageKey) {
-          throw new Error(startRes.error || "Failed to initialize chunked upload session.");
+        // Files > 4.2 MB (e.g. 15 MB, 50 MB, 100 MB+): Presigned Direct PUT to Cloudflare R2
+        setUploadProgress(10);
+        const presignedRes = await getPresignedUploadUrl(selectedFile.name, fileType);
+        if (!presignedRes.success || !presignedRes.uploadUrl || !presignedRes.storageKey) {
+          throw new Error(presignedRes.error || "Failed to generate upload URL.");
         }
 
-        const uploadId = startRes.uploadId;
-        const storageKey = startRes.storageKey;
-        const totalChunks = Math.ceil(selectedFile.size / CHUNK_SIZE);
-        const parts: { partNumber: number; etag: string }[] = [];
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", presignedRes.uploadUrl, true);
+          xhr.setRequestHeader("Content-Type", fileType);
 
-        try {
-          for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, selectedFile.size);
-            const chunk = selectedFile.slice(start, end);
-            const partNumber = i + 1;
-
-            const chunkFormData = new FormData();
-            chunkFormData.append("storageKey", storageKey);
-            chunkFormData.append("uploadId", uploadId);
-            chunkFormData.append("partNumber", partNumber.toString());
-            chunkFormData.append("chunk", chunk, selectedFile.name);
-
-            const chunkRes = await uploadChunk(chunkFormData);
-            if (!chunkRes.success || !chunkRes.etag) {
-              throw new Error(chunkRes.error || `Failed to upload chunk ${partNumber}/${totalChunks}`);
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const percentComplete = Math.round((event.loaded / event.total) * 100);
+              setUploadProgress(percentComplete);
             }
+          };
 
-            parts.push({ partNumber, etag: chunkRes.etag });
-            setUploadProgress(Math.round(((i + 1) / totalChunks) * 100));
-          }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              reject(new Error(`Storage upload failed with HTTP status ${xhr.status}. Check Cloudflare R2 CORS settings.`));
+            }
+          };
 
-          const completeRes = await completeChunkedUpload({
-            storageKey,
-            uploadId,
-            parts,
-            title: fileTitle,
-            fileName: selectedFile.name,
-            fileType,
-            fileSize: selectedFile.size,
-            notes: notes || undefined,
-            parentId: currentFolderId,
-          });
+          xhr.onerror = () => reject(new Error("CORS policy blocked direct upload to Cloudflare R2. Please add CORS rule to your R2 bucket in Cloudflare Dashboard."));
+          xhr.ontimeout = () => reject(new Error("Upload request timed out."));
 
-          if (!completeRes.success) {
-            throw new Error(completeRes.error || "Failed to finalize upload record.");
-          }
-        } catch (uploadErr: any) {
-          await abortChunkedUpload(storageKey, uploadId);
-          throw uploadErr;
+          xhr.send(selectedFile);
+        });
+
+        const metaRes = await addDocumentMetadata({
+          title: fileTitle,
+          fileName: selectedFile.name,
+          fileType: fileType,
+          fileSize: selectedFile.size,
+          storageKey: presignedRes.storageKey,
+          notes: notes || undefined,
+          parentId: currentFolderId,
+        });
+
+        if (!metaRes.success) {
+          throw new Error(metaRes.error || "Failed to save document metadata.");
         }
       }
 
