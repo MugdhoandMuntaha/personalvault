@@ -74,6 +74,10 @@ import {
   addCredentialItem,
   uploadDocumentDirect,
   getPresignedUploadUrl,
+  startChunkedUpload,
+  uploadChunk,
+  completeChunkedUpload,
+  abortChunkedUpload,
   addDocumentMetadata,
   getPresignedViewUrl,
   getPresignedDownloadUrl,
@@ -623,7 +627,7 @@ export default function FormalGreenWhiteVault() {
     }
   };
 
-  // Add Document Upload via Presigned URL (Direct to R2, supports large files 15MB+)
+  // Add Document Upload via Direct / Chunked Server Actions (No CORS rules needed, supports files 15MB+)
   const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) return alert("Please select a document.");
@@ -634,61 +638,83 @@ export default function FormalGreenWhiteVault() {
     try {
       const fileType = selectedFile.type || "application/octet-stream";
       const fileTitle = title.trim() || selectedFile.name;
+      const CHUNK_SIZE = 3 * 1024 * 1024; // 3 MB per chunk (well below Vercel 4.5MB limit)
 
-      // 1. Get presigned upload URL from R2
-      const presignedRes = await getPresignedUploadUrl(selectedFile.name, fileType);
-      if (!presignedRes.success || !presignedRes.uploadUrl || !presignedRes.storageKey) {
-        throw new Error(presignedRes.error || "Failed to generate upload URL");
-      }
+      if (selectedFile.size <= CHUNK_SIZE) {
+        // Direct single-pass upload for small files
+        setUploadProgress(50);
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        if (title) formData.append("title", title);
+        if (notes) formData.append("notes", notes);
+        if (currentFolderId) formData.append("parentId", currentFolderId);
 
-      // 2. Upload file directly from browser to Cloudflare R2 using XMLHttpRequest to show progress
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", presignedRes.uploadUrl, true);
-        xhr.setRequestHeader("Content-Type", fileType);
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percentComplete = Math.round((event.loaded / event.total) * 100);
-            setUploadProgress(percentComplete);
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`Storage upload failed (HTTP ${xhr.status})`));
-          }
-        };
-
-        xhr.onerror = () => reject(new Error("Network error during file upload to storage."));
-        xhr.ontimeout = () => reject(new Error("Upload request timed out."));
-
-        xhr.send(selectedFile);
-      });
-
-      // 3. Save metadata to Neon DB
-      const metaRes = await addDocumentMetadata({
-        title: fileTitle,
-        fileName: selectedFile.name,
-        fileType: fileType,
-        fileSize: selectedFile.size,
-        storageKey: presignedRes.storageKey,
-        notes: notes || undefined,
-        parentId: currentFolderId,
-      });
-
-      if (metaRes.success) {
-        toast.success("Document uploaded successfully!", "Vault");
-        setTitle("");
-        setSelectedFile(null);
-        setNotes("");
-        setAddRecordModalOpen(false);
-        fetchCurrentContents();
+        const res = await uploadDocumentDirect(formData);
+        if (!res.success) {
+          throw new Error(res.error || "Upload failed.");
+        }
+        setUploadProgress(100);
       } else {
-        alert("Failed to save file record: " + metaRes.error);
+        // Chunked multipart upload for large files (> 3 MB)
+        const startRes = await startChunkedUpload(selectedFile.name, fileType);
+        if (!startRes.success || !startRes.uploadId || !startRes.storageKey) {
+          throw new Error(startRes.error || "Failed to initialize chunked upload session.");
+        }
+
+        const uploadId = startRes.uploadId;
+        const storageKey = startRes.storageKey;
+        const totalChunks = Math.ceil(selectedFile.size / CHUNK_SIZE);
+        const parts: { partNumber: number; etag: string }[] = [];
+
+        try {
+          for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, selectedFile.size);
+            const chunk = selectedFile.slice(start, end);
+            const partNumber = i + 1;
+
+            const chunkFormData = new FormData();
+            chunkFormData.append("storageKey", storageKey);
+            chunkFormData.append("uploadId", uploadId);
+            chunkFormData.append("partNumber", partNumber.toString());
+            chunkFormData.append("chunk", chunk, selectedFile.name);
+
+            const chunkRes = await uploadChunk(chunkFormData);
+            if (!chunkRes.success || !chunkRes.etag) {
+              throw new Error(chunkRes.error || `Failed to upload chunk ${partNumber}/${totalChunks}`);
+            }
+
+            parts.push({ partNumber, etag: chunkRes.etag });
+            setUploadProgress(Math.round(((i + 1) / totalChunks) * 100));
+          }
+
+          const completeRes = await completeChunkedUpload({
+            storageKey,
+            uploadId,
+            parts,
+            title: fileTitle,
+            fileName: selectedFile.name,
+            fileType,
+            fileSize: selectedFile.size,
+            notes: notes || undefined,
+            parentId: currentFolderId,
+          });
+
+          if (!completeRes.success) {
+            throw new Error(completeRes.error || "Failed to finalize upload record.");
+          }
+        } catch (uploadErr: any) {
+          await abortChunkedUpload(storageKey, uploadId);
+          throw uploadErr;
+        }
       }
+
+      toast.success("Document uploaded successfully!", "Vault");
+      setTitle("");
+      setSelectedFile(null);
+      setNotes("");
+      setAddRecordModalOpen(false);
+      fetchCurrentContents();
     } catch (err: any) {
       console.error("Upload failed:", err);
       alert("Upload error: " + (err.message || "Unexpected error during upload"));

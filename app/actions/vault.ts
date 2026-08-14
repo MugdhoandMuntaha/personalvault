@@ -7,6 +7,10 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { revalidatePath } from "next/cache";
@@ -294,6 +298,130 @@ export async function getPresignedUploadUrl(fileName: string, fileType?: string)
     return { success: true, uploadUrl, storageKey };
   } catch (error: any) {
     console.error("Failed to generate presigned upload URL:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Starts a multipart chunked upload session on R2 for large files (15MB+)
+ */
+export async function startChunkedUpload(fileName: string, fileType?: string) {
+  try {
+    if (!fileName) {
+      return { success: false, error: "File name is required." };
+    }
+
+    const type = fileType && fileType.trim() ? fileType : "application/octet-stream";
+    const fileId = crypto.randomUUID();
+    const sanitizedName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+    const storageKey = `vault-docs/${fileId}-${sanitizedName}`;
+
+    const command = new CreateMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: storageKey,
+      ContentType: type,
+    });
+
+    const res = await s3.send(command);
+    return { success: true, uploadId: res.UploadId, storageKey };
+  } catch (error: any) {
+    console.error("Failed to start chunked upload:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Uploads an individual chunk (part) of a large file to R2
+ */
+export async function uploadChunk(formData: FormData) {
+  try {
+    const storageKey = formData.get("storageKey") as string;
+    const uploadId = formData.get("uploadId") as string;
+    const partNumber = parseInt(formData.get("partNumber") as string, 10);
+    const chunkFile = formData.get("chunk") as File;
+
+    if (!storageKey || !uploadId || !partNumber || !chunkFile) {
+      return { success: false, error: "Missing required chunk upload parameters." };
+    }
+
+    const buffer = Buffer.from(await chunkFile.arrayBuffer());
+
+    const command = new UploadPartCommand({
+      Bucket: BUCKET_NAME,
+      Key: storageKey,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: buffer,
+    });
+
+    const res = await s3.send(command);
+    return { success: true, partNumber, etag: res.ETag };
+  } catch (error: any) {
+    console.error(`Failed to upload chunk part:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Finalizes a multipart upload and saves document metadata to NeonDB
+ */
+export async function completeChunkedUpload(payload: {
+  storageKey: string;
+  uploadId: string;
+  parts: { partNumber: number; etag: string }[];
+  title: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  notes?: string;
+  parentId: string | null;
+}) {
+  try {
+    const { storageKey, uploadId, parts, title, fileName, fileType, fileSize, notes, parentId } = payload;
+
+    const formattedParts = parts.map((p) => ({
+      PartNumber: p.partNumber,
+      ETag: p.etag,
+    }));
+
+    const completeCmd = new CompleteMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: storageKey,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: formattedParts,
+      },
+    });
+
+    await s3.send(completeCmd);
+
+    await sql`
+      INSERT INTO vault_items (title, type, file_name, file_type, file_size, storage_key, notes, parent_id)
+      VALUES (${title}, 'document', ${fileName}, ${fileType}, ${fileSize}, ${storageKey}, ${notes || null}, ${parentId})
+    `;
+
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to complete chunked upload:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Aborts a failed or canceled multipart upload session on R2
+ */
+export async function abortChunkedUpload(storageKey: string, uploadId: string) {
+  try {
+    const abortCmd = new AbortMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: storageKey,
+      UploadId: uploadId,
+    });
+    await s3.send(abortCmd);
+    return { success: true };
+  } catch (error: any) {
+    console.warn("Failed to abort chunked upload:", error);
     return { success: false, error: error.message };
   }
 }
