@@ -977,4 +977,106 @@ export async function emptyTrash() {
   }
 }
 
+/**
+ * Batch delete multiple items permanently.
+ */
+export async function batchDeleteItems(ids: string[]) {
+  try {
+    if (!ids || ids.length === 0) return { success: true };
+    for (const id of ids) {
+      await deleteVaultItem(id);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch delete items:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Batch update item status (active, archived, trash).
+ */
+export async function batchSetItemStatus(ids: string[], status: "active" | "archived" | "trash") {
+  try {
+    if (!ids || ids.length === 0) return { success: true };
+    for (const id of ids) {
+      await setItemStatus(id, status);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch update item status:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Batch move items to a target folder.
+ */
+export async function batchMoveItems(ids: string[], targetParentId: string | null) {
+  try {
+    if (!ids || ids.length === 0) return { success: true };
+    for (const id of ids) {
+      await moveVaultItem(id, targetParentId);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch move items:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Batch copy/duplicate items to a target folder.
+ */
+export async function batchCopyItems(ids: string[], targetParentId: string | null) {
+  try {
+    if (!ids || ids.length === 0) return { success: true };
+    for (const id of ids) {
+      await copyVaultItem(id, targetParentId);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch copy items:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Batch toggle favorite state.
+ */
+export async function batchToggleFavorite(ids: string[]) {
+  try {
+    if (!ids || ids.length === 0) return { success: true };
+    for (const id of ids) {
+      await toggleFavoriteItem(id);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch toggle favorite:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Batch rename items with title mappings.
+ */
+export async function batchRenameItems(items: { id: string; newTitle: string }[]) {
+  try {
+    if (!items || items.length === 0) return { success: true };
+    for (const item of items) {
+      await renameVaultItem(item.id, item.newTitle);
+    }
+    safeRevalidatePath("/");
+    return { success: true };
+  } catch (error: any) {
+    console.error("Failed to batch rename items:", error);
+    return { success: false, error: error.message };
+  }
+}
+
 

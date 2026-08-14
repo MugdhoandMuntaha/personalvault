@@ -95,6 +95,12 @@ import {
   getArchivedItems,
   getTrashItems,
   emptyTrash,
+  batchDeleteItems,
+  batchSetItemStatus,
+  batchMoveItems,
+  batchCopyItems,
+  batchToggleFavorite,
+  batchRenameItems,
   VaultItem,
 } from "@/app/actions/vault";
 import { deriveKey, encryptText, decryptText } from "@/lib/crypto";
@@ -233,9 +239,15 @@ export default function FormalGreenWhiteVault() {
   const [isZenMode, setIsZenMode] = useState(false);
   const [editorCursorPos, setEditorCursorPos] = useState({ line: 1, col: 1 });
 
-  // Confirmation Modals state
+  // Confirmation Modals state & Multi-Select state
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<VaultItem | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [batchMoveModalOpen, setBatchMoveModalOpen] = useState(false);
+  const [batchMoveTargetFolderId, setBatchMoveTargetFolderId] = useState<string | null>(null);
+  const [batchRenameModalOpen, setBatchRenameModalOpen] = useState(false);
+  const [batchRenamePrefix, setBatchRenamePrefix] = useState("");
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
 
   // Global Keyboard Shortcuts Listener
   useEffect(() => {
@@ -380,6 +392,169 @@ export default function FormalGreenWhiteVault() {
       }
     });
   }, [items]);
+
+  // Close 3-dot action menu when clicking anywhere on the screen
+  useEffect(() => {
+    const handleClickOutside = () => {
+      if (actionMenuOpenId) {
+        setActionMenuOpenId(null);
+      }
+    };
+    window.addEventListener("click", handleClickOutside);
+    return () => window.removeEventListener("click", handleClickOutside);
+  }, [actionMenuOpenId]);
+
+  // Multi-Selection & Batch Operation Handlers
+  const handleToggleSelectItem = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedItemIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedItemIds.length === filteredItems.length) {
+      setSelectedItemIds([]);
+    } else {
+      setSelectedItemIds(filteredItems.map((item) => item.id));
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedItemIds.length === 0) return;
+    const isTrash = activeSection === "trash";
+    const msg = isTrash
+      ? `Permanently delete ${selectedItemIds.length} selected item(s)? This cannot be undone.`
+      : `Move ${selectedItemIds.length} selected item(s) to Trash?`;
+    
+    if (confirm(msg)) {
+      setIsBatchProcessing(true);
+      try {
+        const res = isTrash
+          ? await batchDeleteItems(selectedItemIds)
+          : await batchSetItemStatus(selectedItemIds, "trash");
+        if (res.success) {
+          toast.success(`${selectedItemIds.length} item(s) ${isTrash ? "permanently deleted" : "moved to trash"}.`, "Vault");
+          setSelectedItemIds([]);
+          fetchCurrentContents();
+        } else {
+          alert("Batch delete error: " + res.error);
+        }
+      } catch (err: any) {
+        alert("Batch delete failed: " + err.message);
+      } finally {
+        setIsBatchProcessing(false);
+      }
+    }
+  };
+
+  const handleBatchArchive = async () => {
+    if (selectedItemIds.length === 0) return;
+    const targetStatus = activeSection === "archive" ? "active" : "archived";
+    setIsBatchProcessing(true);
+    try {
+      const res = await batchSetItemStatus(selectedItemIds, targetStatus);
+      if (res.success) {
+        toast.success(`${selectedItemIds.length} item(s) ${targetStatus === "active" ? "unarchived" : "archived"}.`, "Vault");
+        setSelectedItemIds([]);
+        fetchCurrentContents();
+      } else {
+        alert("Batch archive error: " + res.error);
+      }
+    } catch (err: any) {
+      alert("Batch archive failed: " + err.message);
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  };
+
+  const handleBatchFavorite = async () => {
+    if (selectedItemIds.length === 0) return;
+    setIsBatchProcessing(true);
+    try {
+      const res = await batchToggleFavorite(selectedItemIds);
+      if (res.success) {
+        toast.success(`Updated favorites for ${selectedItemIds.length} item(s).`, "Vault");
+        setSelectedItemIds([]);
+        fetchCurrentContents();
+      } else {
+        alert("Batch star error: " + res.error);
+      }
+    } catch (err: any) {
+      alert("Batch star failed: " + err.message);
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  };
+
+  const handleBatchCopy = async () => {
+    if (selectedItemIds.length === 0) return;
+    setIsBatchProcessing(true);
+    try {
+      const res = await batchCopyItems(selectedItemIds, currentFolderId);
+      if (res.success) {
+        toast.success(`Duplicated ${selectedItemIds.length} item(s).`, "Vault");
+        setSelectedItemIds([]);
+        fetchCurrentContents();
+      } else {
+        alert("Batch copy error: " + res.error);
+      }
+    } catch (err: any) {
+      alert("Batch copy failed: " + err.message);
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  };
+
+  const handleBatchMoveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedItemIds.length === 0) return;
+    setIsBatchProcessing(true);
+    try {
+      const res = await batchMoveItems(selectedItemIds, batchMoveTargetFolderId);
+      if (res.success) {
+        toast.success(`Moved ${selectedItemIds.length} item(s).`, "Vault");
+        setSelectedItemIds([]);
+        setBatchMoveModalOpen(false);
+        fetchCurrentContents();
+      } else {
+        alert("Batch move error: " + res.error);
+      }
+    } catch (err: any) {
+      alert("Batch move failed: " + err.message);
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  };
+
+  const handleBatchRenameSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedItemIds.length === 0 || !batchRenamePrefix.trim()) return;
+    setIsBatchProcessing(true);
+    try {
+      const renameMappings = selectedItemIds.map((id, index) => {
+        const item = items.find((i) => i.id === id);
+        const ext = item?.file_name?.includes(".") ? "." + item.file_name.split(".").pop() : "";
+        const newTitle = selectedItemIds.length === 1 ? batchRenamePrefix.trim() : `${batchRenamePrefix.trim()}_${index + 1}${ext}`;
+        return { id, newTitle };
+      });
+
+      const res = await batchRenameItems(renameMappings);
+      if (res.success) {
+        toast.success(`Renamed ${selectedItemIds.length} item(s).`, "Vault");
+        setSelectedItemIds([]);
+        setBatchRenamePrefix("");
+        setBatchRenameModalOpen(false);
+        fetchCurrentContents();
+      } else {
+        alert("Batch rename error: " + res.error);
+      }
+    } catch (err: any) {
+      alert("Batch rename failed: " + err.message);
+    } finally {
+      setIsBatchProcessing(false);
+    }
+  };
 
   // Action Handlers for Favorites, Archive, Trash, & Drag-and-Drop
   const handleToggleFavorite = async (item: VaultItem, e?: React.MouseEvent) => {
@@ -1665,7 +1840,11 @@ export default function FormalGreenWhiteVault() {
                   onDragOver={(e) => item.type === "folder" && handleDragOverFolder(e, item.id)}
                   onDrop={(e) => item.type === "folder" && handleDropOnFolder(e, item.id)}
                   className={`group relative rounded-xl glass-panel glass-panel-hover p-4 flex flex-col justify-between cursor-pointer border bg-white transition ${
-                    dragOverFolderId === item.id ? "border-emerald-500 bg-emerald-100/60 ring-2 ring-emerald-500" : "border-emerald-100/80"
+                    selectedItemIds.includes(item.id)
+                      ? "border-emerald-600 bg-emerald-50/80 ring-2 ring-emerald-500 shadow-md"
+                      : dragOverFolderId === item.id
+                      ? "border-emerald-500 bg-emerald-100/60 ring-2 ring-emerald-500"
+                      : "border-emerald-100/80"
                   }`}
                   onClick={() => {
                     if (item.type === "folder") {
@@ -1685,6 +1864,13 @@ export default function FormalGreenWhiteVault() {
                         loading="lazy"
                       />
                       <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedItemIds.includes(item.id)}
+                          onChange={() => {}}
+                          onClick={(e) => handleToggleSelectItem(item.id, e)}
+                          className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600 cursor-pointer shadow-xs"
+                        />
                         <span className="px-1.5 py-0.5 rounded bg-emerald-950/75 backdrop-blur-xs text-[10px] font-bold text-white uppercase tracking-wider">
                           {item.file_name?.split(".").pop()?.toUpperCase()}
                         </span>
@@ -1698,7 +1884,10 @@ export default function FormalGreenWhiteVault() {
                           <Star className={`h-3.5 w-3.5 ${item.is_favorite ? "fill-amber-400 text-amber-400" : "text-white"}`} />
                         </button>
                         <button
-                          onClick={() => setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id);
+                          }}
                           className="p-1.5 rounded-full bg-emerald-950/60 backdrop-blur-xs text-white hover:bg-emerald-900 transition"
                         >
                           <MoreVertical className="h-3.5 w-3.5" />
@@ -1708,6 +1897,13 @@ export default function FormalGreenWhiteVault() {
                   ) : (
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedItemIds.includes(item.id)}
+                          onChange={() => {}}
+                          onClick={(e) => handleToggleSelectItem(item.id, e)}
+                          className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600 cursor-pointer"
+                        />
                         <button
                           onClick={(e) => handleToggleFavorite(item, e)}
                           className="p-1 text-emerald-300 hover:text-amber-400 transition"
@@ -1726,9 +1922,10 @@ export default function FormalGreenWhiteVault() {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
-                          onClick={() =>
-                            setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id)
-                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActionMenuOpenId(actionMenuOpenId === item.id ? null : item.id);
+                          }}
                           className="p-1 text-emerald-700 hover:text-emerald-950 rounded-md hover:bg-emerald-50 transition"
                         >
                           <MoreVertical className="h-4 w-4" />
@@ -1868,6 +2065,14 @@ export default function FormalGreenWhiteVault() {
               <table className="w-full min-w-[480px] text-left text-xs text-emerald-950">
                 <thead className="border-b border-emerald-100 bg-emerald-50 text-emerald-900 font-bold uppercase tracking-wider text-[10px]">
                   <tr>
+                    <th className="px-3 py-3 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={filteredItems.length > 0 && selectedItemIds.length === filteredItems.length}
+                        onChange={handleSelectAll}
+                        className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600 cursor-pointer"
+                      />
+                    </th>
                     <th className="px-4 py-3">Name</th>
                     <th className="px-4 py-3">Type</th>
                     <th className="px-4 py-3">Size</th>
@@ -1890,9 +2095,22 @@ export default function FormalGreenWhiteVault() {
                         }
                       }}
                       className={`hover:bg-emerald-50/60 cursor-pointer transition ${
-                        dragOverFolderId === item.id ? "bg-emerald-100/80" : ""
+                        selectedItemIds.includes(item.id)
+                          ? "bg-emerald-100/90 font-medium"
+                          : dragOverFolderId === item.id
+                          ? "bg-emerald-100/80"
+                          : ""
                       }`}
                     >
+                      <td className="px-3 py-3 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedItemIds.includes(item.id)}
+                          onChange={() => {}}
+                          onClick={(e) => handleToggleSelectItem(item.id, e)}
+                          className="h-4 w-4 rounded border-emerald-300 text-emerald-700 focus:ring-emerald-600 cursor-pointer"
+                        />
+                      </td>
                       <td className="px-4 py-3 flex items-center gap-2.5 font-bold text-emerald-950">
                         <button
                           onClick={(e) => handleToggleFavorite(item, e)}
@@ -3102,6 +3320,188 @@ export default function FormalGreenWhiteVault() {
           }
         }}
       />
+
+      {/* Floating Batch Actions Toolbar */}
+      {selectedItemIds.length > 0 && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 sm:gap-3 p-2.5 sm:px-4 sm:py-3 rounded-2xl bg-emerald-950/90 text-white backdrop-blur-md border border-emerald-500/40 shadow-2xl transition-all duration-300 max-w-[95vw] overflow-x-auto">
+          <div className="flex items-center gap-2 pr-2 border-r border-emerald-800/80">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-xs font-black text-emerald-950">
+              {selectedItemIds.length}
+            </span>
+            <span className="text-xs font-bold whitespace-nowrap text-emerald-100 hidden sm:inline">
+              Selected
+            </span>
+          </div>
+
+          <button
+            onClick={handleSelectAll}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-200 hover:bg-emerald-800/60 hover:text-white transition whitespace-nowrap"
+          >
+            {selectedItemIds.length === filteredItems.length ? "Deselect All" : "Select All"}
+          </button>
+
+          <button
+            onClick={handleBatchFavorite}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-100 hover:bg-emerald-800/60 transition whitespace-nowrap"
+            title="Star / Unstar Selected"
+          >
+            <Star className="h-3.5 w-3.5 text-amber-400 fill-amber-400" />
+            <span className="hidden md:inline">Star</span>
+          </button>
+
+          <button
+            onClick={handleBatchCopy}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-100 hover:bg-emerald-800/60 transition whitespace-nowrap"
+            title="Duplicate Selected"
+          >
+            <Copy className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="hidden md:inline">Duplicate</span>
+          </button>
+
+          <button
+            onClick={() => setBatchMoveModalOpen(true)}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-100 hover:bg-emerald-800/60 transition whitespace-nowrap"
+            title="Move Selected to Folder"
+          >
+            <Move className="h-3.5 w-3.5 text-emerald-300" />
+            <span>Move</span>
+          </button>
+
+          <button
+            onClick={() => setBatchRenameModalOpen(true)}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-100 hover:bg-emerald-800/60 transition whitespace-nowrap"
+            title="Batch Rename Selected"
+          >
+            <Edit3 className="h-3.5 w-3.5 text-emerald-300" />
+            <span>Rename</span>
+          </button>
+
+          <button
+            onClick={handleBatchArchive}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-emerald-100 hover:bg-emerald-800/60 transition whitespace-nowrap"
+            title="Archive Selected"
+          >
+            <Archive className="h-3.5 w-3.5 text-sky-400" />
+            <span className="hidden md:inline">{activeSection === "archive" ? "Unarchive" : "Archive"}</span>
+          </button>
+
+          <button
+            onClick={handleBatchDelete}
+            disabled={isBatchProcessing}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-300 hover:bg-rose-900/60 transition whitespace-nowrap"
+            title="Delete Selected"
+          >
+            <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+            <span>{activeSection === "trash" ? "Delete" : "Trash"}</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedItemIds([])}
+            className="p-1.5 rounded-lg text-emerald-400 hover:bg-emerald-800/60 hover:text-white transition ml-1"
+            title="Clear selection"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Batch Move Modal */}
+      {batchMoveModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl glass-panel p-6 space-y-4 border border-emerald-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+              <h3 className="text-base font-bold text-emerald-950">Move {selectedItemIds.length} Items</h3>
+              <button onClick={() => setBatchMoveModalOpen(false)} className="text-emerald-700 hover:text-emerald-950">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form onSubmit={handleBatchMoveSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-emerald-900 mb-1">Target Destination</label>
+                <select
+                  value={batchMoveTargetFolderId || ""}
+                  onChange={(e) => setBatchMoveTargetFolderId(e.target.value || null)}
+                  className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950 outline-none focus:border-emerald-600"
+                >
+                  <option value="">📁 Root Vault Directory</option>
+                  {allFolders.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      📂 {f.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBatchMoveModalOpen(false)}
+                  className="px-4 py-2 rounded-lg text-xs font-bold text-emerald-800 hover:bg-emerald-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isBatchProcessing}
+                  className="px-4 py-2 rounded-lg bg-emerald-700 text-white font-bold text-xs hover:bg-emerald-800 shadow-xs transition"
+                >
+                  {isBatchProcessing ? "Moving..." : "Move Items"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Rename Modal */}
+      {batchRenameModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl glass-panel p-6 space-y-4 border border-emerald-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+              <h3 className="text-base font-bold text-emerald-950">Batch Rename {selectedItemIds.length} Items</h3>
+              <button onClick={() => setBatchRenameModalOpen(false)} className="text-emerald-700 hover:text-emerald-950">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form onSubmit={handleBatchRenameSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-emerald-900 mb-1">New Title Prefix / Pattern</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Document or Photo"
+                  value={batchRenamePrefix}
+                  onChange={(e) => setBatchRenamePrefix(e.target.value)}
+                  className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-950 outline-none focus:border-emerald-600"
+                />
+                <p className="text-[11px] text-emerald-700 mt-1 font-medium">
+                  Items will be named: <span className="font-bold">{batchRenamePrefix || "Prefix"}_1</span>, <span className="font-bold">{batchRenamePrefix || "Prefix"}_2</span>, etc.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBatchRenameModalOpen(false)}
+                  className="px-4 py-2 rounded-lg text-xs font-bold text-emerald-800 hover:bg-emerald-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isBatchProcessing || !batchRenamePrefix.trim()}
+                  className="px-4 py-2 rounded-lg bg-emerald-700 text-white font-bold text-xs hover:bg-emerald-800 shadow-xs transition"
+                >
+                  {isBatchProcessing ? "Renaming..." : "Rename Items"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Keyboard Shortcuts Cheatsheet Modal */}
       <CheatsheetModal
